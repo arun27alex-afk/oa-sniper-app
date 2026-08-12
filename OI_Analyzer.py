@@ -19,11 +19,10 @@ st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
 CLIENT_ID = "BT8FRQLN19-200"  # உங்களின் Algo App ID-ஐ இங்கே போடவும்
 SECRET_KEY = "0ivLeQN8vdI2VyKA" # உங்களின் Algo Secret Key-ஐ இங்கே போடவும்
 
-# கவனிக்கவும்: லிங்கின் கடைசியில் ஒரு ஸ்லாஷ் (/) சேர்த்துள்ளேன்
 REDIRECT_URI = "https://oa-sniper.streamlit.app/" 
 EXPIRY = "26813" 
 
-# லாகின் லூப் எரர் சரிசெய்யப்பட்ட புதிய ஃபங்ஷன்
+# லூப் எரரைத் தடுக்கும் புதிய லாகின் சிஸ்டம் (Manual Continue Button)
 def fyers_auto_login():
     if 'access_token' in st.session_state: 
         return st.session_state['access_token']
@@ -37,8 +36,12 @@ def fyers_auto_login():
         
         if 'access_token' in res:
             st.session_state['access_token'] = res['access_token']
-            st.query_params.clear() # st.rerun() நீக்கப்பட்டுள்ளது
-            return res['access_token']
+            st.success("✅ லாகின் வெற்றி! (Login Successful)")
+            st.markdown(f'<a href="{REDIRECT_URI}" target="_self"><button style="background-color:blue; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">➡️ தொடர இங்கே கிளிக் செய்யவும் (Continue)</button></a>', unsafe_allow_html=True)
+            st.stop()
+        else:
+            st.error("Login Failed! Check credentials.")
+            st.stop()
     else:
         session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
         auth_link = session.generate_authcode()
