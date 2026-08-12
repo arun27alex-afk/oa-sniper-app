@@ -9,7 +9,7 @@ import time
 st.set_page_config(layout="wide", page_title="OA Sniper Dashboard")
 
 # ==========================================
-# 1. AUTO REFRESH (10 விநாடிக்கு ஒருமுறை ஸ்கிரீன் அப்டேட் ஆகும்)
+# 1. AUTO REFRESH
 # ==========================================
 st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
 
@@ -19,25 +19,30 @@ st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
 CLIENT_ID = "BT8FRQLN19-200"  # உங்களின் Algo App ID-ஐ இங்கே போடவும்
 SECRET_KEY = "0ivLeQN8vdI2VyKA" # உங்களின் Algo Secret Key-ஐ இங்கே போடவும்
 
-# க்ளவுடிற்காக மாற்றப்பட்ட புதிய லிங்க் 
-REDIRECT_URI = "https://oa-sniper.streamlit.app" 
-EXPIRY = "26813" # தற்போதைய வார எக்ஸ்பைரி கோட்
+# கவனிக்கவும்: லிங்கின் கடைசியில் ஒரு ஸ்லாஷ் (/) சேர்த்துள்ளேன்
+REDIRECT_URI = "https://oa-sniper.streamlit.app/" 
+EXPIRY = "26813" 
 
+# லாகின் லூப் எரர் சரிசெய்யப்பட்ட புதிய ஃபங்ஷன்
 def fyers_auto_login():
-    if 'access_token' in st.session_state: return st.session_state['access_token']
+    if 'access_token' in st.session_state: 
+        return st.session_state['access_token']
+    
     query_params = st.query_params
     if 'auth_code' in query_params:
+        auth_code = query_params['auth_code']
         session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
-        session.set_token(query_params['auth_code'])
+        session.set_token(auth_code)
         res = session.generate_token()
+        
         if 'access_token' in res:
             st.session_state['access_token'] = res['access_token']
-            st.query_params.clear()
-            st.rerun()
+            st.query_params.clear() # st.rerun() நீக்கப்பட்டுள்ளது
             return res['access_token']
     else:
-        auth_link = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code").generate_authcode()
-        st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
+        session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
+        auth_link = session.generate_authcode()
+        st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
         st.stop()
 
 fyers = fyersModel.FyersModel(client_id=CLIENT_ID, is_async=False, token=fyers_auto_login(), log_path="")
@@ -55,7 +60,6 @@ atm_strike = int(round(spot_price / 50.0)) * 50
 
 st.markdown(f"### 🎯 Nifty Spot: **{spot_price}**")
 
-# Strike Selection (ITM, ATM, OTM)
 strike_type = st.radio("Select Strike Type:", ("ITM", "ATM", "OTM"), horizontal=True, index=1)
 if strike_type == "ITM": selected_strike = atm_strike - 50
 elif strike_type == "OTM": selected_strike = atm_strike + 50
@@ -78,7 +82,6 @@ try:
             if item['n'] == pe_sym: pe_oi = val
 except: pass
 
-# 3-Min Tracker Logic (180 Seconds)
 if 'tracker' not in st.session_state:
     st.session_state.tracker = {'ce_oi': ce_oi, 'pe_oi': pe_oi, 'time': time.time(), 'ce_diff': 0, 'pe_diff': 0}
 
@@ -141,7 +144,7 @@ try:
                 max_pe_oi, sup_strike = oi, val
 except: pass
 
-st.markdown("### 📈 Live Structure Chart (With Auto Support/Resistance Lines)")
+st.markdown("### 📈 Live Structure Chart")
 
 hist_data = {"symbol": "NSE:NIFTY50-INDEX", "resolution": "5", "date_format": "1", 
              "range_from": datetime.date.today().strftime("%Y-%m-%d"), 
@@ -162,4 +165,4 @@ if not df.empty:
     fig.update_layout(xaxis_rangeslider_visible=False, height=500, margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning("மார்க்கெட் நேரம் முடிந்ததால் சார்ட் டேட்டா கிடைக்கவில்லை. லைவ் மார்க்கெட்டில் சரியாக வரும்.")
+    st.warning("மார்க்கெட் நேரம் முடிந்ததால் சார்ட் டேட்டா கிடைக்கவில்லை.")
