@@ -1,4 +1,4 @@
-import streamlit as st
+Import streamlit as st
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 from fyers_apiv3 import fyersModel
@@ -9,49 +9,39 @@ import time
 st.set_page_config(layout="wide", page_title="Sniper OI Pro Dashboard")
 
 # ==========================================
-# 1. FYERS API CREDENTIALS
-# ==========================================
-CLIENT_ID = "JFBDGDNQ04-100"  # Enter your Algo App ID here
-SECRET_KEY = "SENO8XK3VL" # Enter your Algo Secret Key here
-REDIRECT_URI = "https://oa-sniper.streamlit.app" # Cloud URL
-EXPIRY = "26813" # Current weekly expiry code
-
-# ==========================================
-# 2. BULLETPROOF LOGIN (No Crash/Loop)
-# ==========================================
-def fyers_auto_login():
-    if 'access_token' in st.session_state: 
-        return st.session_state['access_token']
-    
-    if 'auth_code' in st.query_params:
-        auth_code = st.query_params['auth_code']
-        session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
-        session.set_token(auth_code)
-        res = session.generate_token()
-        
-        if 'access_token' in res:
-            st.session_state['access_token'] = res['access_token']
-            # Loop எரரை உருவாக்கிய st.rerun() மற்றும் clear() வரிகள் இங்கே முற்றிலுமாக நீக்கப்பட்டுள்ளன!
-            return res['access_token']
-        else:
-            st.error("Login Failed! Please remove '?auth_code=...' from the URL and press Enter.")
-            st.stop()
-    else:
-        session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
-        auth_link = session.generate_authcode()
-        st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px; border:none; border-radius:5px;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
-        st.stop()
-
-# Fyers Model initializes after successful login
-fyers = fyersModel.FyersModel(client_id=CLIENT_ID, is_async=False, token=fyers_auto_login(), log_path="")
-
-# ==========================================
-# 3. AUTO REFRESH
+# 1. AUTO REFRESH (10 விநாடிக்கு ஒருமுறை ஸ்கிரீன் அப்டேட் ஆகும்)
 # ==========================================
 st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
 
 # ==========================================
-# 4. GET NIFTY SPOT & CALCULATE STRIKES
+# 2. FYERS API CREDENTIALS
+# ==========================================
+CLIENT_ID = "JFBDGDNQ04-100"  # உங்களின் Algo App ID
+SECRET_KEY = "SENO8XK3VL" # உங்களின் Algo Secret Key
+REDIRECT_URI = "https://oa-sniper.streamlit.app" 
+EXPIRY = "26813" # தற்போதைய வார எக்ஸ்பைரி கோட் (Aug 13, 2026)
+
+def fyers_auto_login():
+    if 'access_token' in st.session_state: return st.session_state['access_token']
+    query_params = st.query_params
+    if 'auth_code' in query_params:
+        session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
+        session.set_token(query_params['auth_code'])
+        res = session.generate_token()
+        if 'access_token' in res:
+            st.session_state['access_token'] = res['access_token']
+            st.query_params.clear()
+            st.rerun()
+            return res['access_token']
+    else:
+        auth_link = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code").generate_authcode()
+        st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
+        st.stop()
+
+fyers = fyersModel.FyersModel(client_id=CLIENT_ID, is_async=False, token=fyers_auto_login(), log_path="")
+
+# ==========================================
+# 3. GET NIFTY SPOT & CALCULATE STRIKES
 # ==========================================
 spot_price = 24200.0
 try:
@@ -70,7 +60,7 @@ elif strike_type == "OTM": selected_strike = atm_strike + 50
 else: selected_strike = atm_strike
 
 # ==========================================
-# 5. FETCH SELECTED STRIKE OI & 3-MIN LOGIC
+# 4. FETCH SELECTED STRIKE OI & 3-MIN LOGIC
 # ==========================================
 ce_sym = f"NSE:NIFTY{EXPIRY}{selected_strike}CE"
 pe_sym = f"NSE:NIFTY{EXPIRY}{selected_strike}PE"
@@ -91,7 +81,7 @@ if 'tracker' not in st.session_state:
     st.session_state.tracker = {'ce_oi': ce_oi, 'pe_oi': pe_oi, 'time': time.time(), 'ce_diff': 0, 'pe_diff': 0}
 
 current_time = time.time()
-if current_time - st.session_state.tracker['time'] >= 180: # After 3 minutes
+if current_time - st.session_state.tracker['time'] >= 180: # 3 நிமிடங்கள் ஆன பின்பு
     st.session_state.tracker['ce_diff'] = ce_oi - st.session_state.tracker['ce_oi']
     st.session_state.tracker['pe_diff'] = pe_oi - st.session_state.tracker['pe_oi']
     st.session_state.tracker['ce_oi'] = ce_oi
@@ -102,28 +92,33 @@ ce_3min_diff = st.session_state.tracker['ce_diff']
 pe_3min_diff = st.session_state.tracker['pe_diff']
 
 # ==========================================
-# 6. 5-COLUMN UI DESIGN
+# 5. 5-COLUMN UI DESIGN
 # ==========================================
 st.markdown("---")
 c1, c2, c3, c4, c5 = st.columns(5)
 
+# Column 1: CE OI
 with c1:
     st.markdown("<h4 style='text-align: center; color: red;'>CE OI</h4>", unsafe_allow_html=True)
     st.markdown(f"<h3 style='text-align: center;'>{ce_oi}</h3>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align: center; color: {'green' if ce_3min_diff > 0 else 'red'};'>({'+' if ce_3min_diff > 0 else ''}{ce_3min_diff} in 3m)</p>", unsafe_allow_html=True)
 
+# Column 2: CE OI Change
 with c2:
     st.markdown("<h4 style='text-align: center; color: red;'>CE OI Chg</h4>", unsafe_allow_html=True)
     st.markdown(f"<h3 style='text-align: center;'>{ce_chg}</h3>", unsafe_allow_html=True)
 
+# Column 3: STRIKE PRICE (Center)
 with c3:
     st.markdown("<h4 style='text-align: center; color: orange;'>STRIKE</h4>", unsafe_allow_html=True)
     st.markdown(f"<h2 style='text-align: center; background-color: #f0f2f6; padding: 10px; border-radius: 10px;'>{selected_strike}</h2>", unsafe_allow_html=True)
 
+# Column 4: PE OI Change
 with c4:
     st.markdown("<h4 style='text-align: center; color: green;'>PE OI Chg</h4>", unsafe_allow_html=True)
     st.markdown(f"<h3 style='text-align: center;'>{pe_chg}</h3>", unsafe_allow_html=True)
 
+# Column 5: PE OI
 with c5:
     st.markdown("<h4 style='text-align: center; color: green;'>PE OI</h4>", unsafe_allow_html=True)
     st.markdown(f"<h3 style='text-align: center;'>{pe_oi}</h3>", unsafe_allow_html=True)
@@ -132,8 +127,9 @@ with c5:
 st.markdown("---")
 
 # ==========================================
-# 7. CHART WITH AUTO SUPPORT/RESISTANCE
+# 6. CHART WITH AUTO SUPPORT/RESISTANCE
 # ==========================================
+# ஸ்கேன் செய்து Max OI கண்டுபிடித்தல் (பழைய லாஜிக்)
 symbols_list = [f"NSE:NIFTY{EXPIRY}{atm_strike + (i * 50)}CE" for i in range(-10, 11)] + [f"NSE:NIFTY{EXPIRY}{atm_strike + (i * 50)}PE" for i in range(-10, 11)]
 max_ce_oi, max_pe_oi, res_strike, sup_strike = 0, 0, 0, 0
 
@@ -170,4 +166,4 @@ if not df.empty:
     fig.update_layout(xaxis_rangeslider_visible=False, height=500, margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning("Chart data is unavailable as market hours have ended. It will be updated tomorrow at 9:15 AM.")
+    st.warning("மார்க்கெட் நேரம் முடிந்ததால் சார்ட் டேட்டா கிடைக்கவில்லை. நாளை காலை 9:15-க்கு சரியாக வரும்.")
