@@ -16,38 +16,39 @@ st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
 # ==========================================
 # 2. FYERS API CREDENTIALS
 # ==========================================
-CLIENT_ID = "BT8FRQLN19-200"  # உங்களின் Algo App ID-ஐ இங்கே போடவும்
-SECRET_KEY = "0ivLeQN8vdI2VyKA" # உங்களின் Algo Secret Key-ஐ இங்கே போடவும்
+CLIENT_ID = "BT8FRQLN19-200"  # உங்களின் Algo App ID
+SECRET_KEY = "0ivLeQN8vdI2VyKA" # உங்களின் Algo Secret Key
 
-REDIRECT_URI = "https://oa-sniper.streamlit.app/" 
+# ஸ்லாஷ் இல்லாத பழைய ஒரிஜினல் லிங்க்
+REDIRECT_URI = "https://oa-sniper.streamlit.app" 
 EXPIRY = "26813" 
 
-# லூப் எரரைத் தடுக்கும் புதிய லாகின் சிஸ்டம் (Manual Continue Button)
+# ==========================================
+# லூப் எரர் இல்லாத, மிக எளிய லாகின் சிஸ்டம்
+# ==========================================
 def fyers_auto_login():
+    # ஏற்கனவே லாகின் ஆகியிருந்தால், டோக்கனைத் திருப்பி அனுப்பு
     if 'access_token' in st.session_state: 
         return st.session_state['access_token']
     
-    query_params = st.query_params
-    if 'auth_code' in query_params:
-        auth_code = query_params['auth_code']
+    # URL-ல் auth_code இருந்தால், டோக்கனை உருவாக்கு (எரர் வரக்கூடாது என்பதால் URL-ஐ கிளியர் செய்யவில்லை)
+    if 'auth_code' in st.query_params:
+        auth_code = st.query_params['auth_code']
         session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
         session.set_token(auth_code)
         res = session.generate_token()
         
         if 'access_token' in res:
             st.session_state['access_token'] = res['access_token']
-            st.success("✅ லாகின் வெற்றி! (Login Successful)")
-            st.markdown(f'<a href="{REDIRECT_URI}" target="_self"><button style="background-color:blue; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">➡️ தொடர இங்கே கிளிக் செய்யவும் (Continue)</button></a>', unsafe_allow_html=True)
-            st.stop()
-        else:
-            st.error("Login Failed! Check credentials.")
-            st.stop()
-    else:
-        session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
-        auth_link = session.generate_authcode()
-        st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
-        st.stop()
+            return res['access_token']
+    
+    # லாகின் ஆகவில்லை என்றால் பட்டனைக் காட்டு
+    session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
+    auth_link = session.generate_authcode()
+    st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
+    st.stop()
 
+# Fyers Model-ஐ துவங்குதல்
 fyers = fyersModel.FyersModel(client_id=CLIENT_ID, is_async=False, token=fyers_auto_login(), log_path="")
 
 # ==========================================
