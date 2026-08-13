@@ -14,36 +14,39 @@ st.set_page_config(layout="wide", page_title="Sniper OI Pro Dashboard")
 CLIENT_ID = "JFBDGDNQ04-100"  # Enter your Algo App ID here
 SECRET_KEY = "SENO8XK3VL" # Enter your Algo Secret Key here
 REDIRECT_URI = "https://oa-sniper.streamlit.app" # Cloud URL
-EXPIRY = "26813" # Current weekly expiry code (Aug 13, 2026)
+EXPIRY = "26813" # Current weekly expiry code
 
 # ==========================================
-# 2. AUTO LOGIN LOGIC
+# 2. BULLETPROOF LOGIN (No Crash/Loop)
 # ==========================================
 def fyers_auto_login():
     if 'access_token' in st.session_state: 
         return st.session_state['access_token']
     
-    query_params = st.query_params
-    if 'auth_code' in query_params:
+    if 'auth_code' in st.query_params:
+        auth_code = st.query_params['auth_code']
         session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
-        session.set_token(query_params['auth_code'])
+        session.set_token(auth_code)
         res = session.generate_token()
         
         if 'access_token' in res:
             st.session_state['access_token'] = res['access_token']
-            st.query_params.clear()
-            st.rerun()
+            # Loop எரரை உருவாக்கிய st.rerun() மற்றும் clear() வரிகள் இங்கே முற்றிலுமாக நீக்கப்பட்டுள்ளன!
             return res['access_token']
+        else:
+            st.error("Login Failed! Please remove '?auth_code=...' from the URL and press Enter.")
+            st.stop()
     else:
-        auth_link = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code").generate_authcode()
-        st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
+        session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
+        auth_link = session.generate_authcode()
+        st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px; border:none; border-radius:5px;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
         st.stop()
 
 # Fyers Model initializes after successful login
 fyers = fyersModel.FyersModel(client_id=CLIENT_ID, is_async=False, token=fyers_auto_login(), log_path="")
 
 # ==========================================
-# 3. AUTO REFRESH (Runs only after successful login)
+# 3. AUTO REFRESH
 # ==========================================
 st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
 
@@ -104,28 +107,23 @@ pe_3min_diff = st.session_state.tracker['pe_diff']
 st.markdown("---")
 c1, c2, c3, c4, c5 = st.columns(5)
 
-# Column 1: CE OI
 with c1:
     st.markdown("<h4 style='text-align: center; color: red;'>CE OI</h4>", unsafe_allow_html=True)
     st.markdown(f"<h3 style='text-align: center;'>{ce_oi}</h3>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align: center; color: {'green' if ce_3min_diff > 0 else 'red'};'>({'+' if ce_3min_diff > 0 else ''}{ce_3min_diff} in 3m)</p>", unsafe_allow_html=True)
 
-# Column 2: CE OI Change
 with c2:
     st.markdown("<h4 style='text-align: center; color: red;'>CE OI Chg</h4>", unsafe_allow_html=True)
     st.markdown(f"<h3 style='text-align: center;'>{ce_chg}</h3>", unsafe_allow_html=True)
 
-# Column 3: STRIKE PRICE (Center)
 with c3:
     st.markdown("<h4 style='text-align: center; color: orange;'>STRIKE</h4>", unsafe_allow_html=True)
     st.markdown(f"<h2 style='text-align: center; background-color: #f0f2f6; padding: 10px; border-radius: 10px;'>{selected_strike}</h2>", unsafe_allow_html=True)
 
-# Column 4: PE OI Change
 with c4:
     st.markdown("<h4 style='text-align: center; color: green;'>PE OI Chg</h4>", unsafe_allow_html=True)
     st.markdown(f"<h3 style='text-align: center;'>{pe_chg}</h3>", unsafe_allow_html=True)
 
-# Column 5: PE OI
 with c5:
     st.markdown("<h4 style='text-align: center; color: green;'>PE OI</h4>", unsafe_allow_html=True)
     st.markdown(f"<h3 style='text-align: center;'>{pe_oi}</h3>", unsafe_allow_html=True)
