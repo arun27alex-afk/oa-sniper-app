@@ -9,29 +9,17 @@ import time
 st.set_page_config(layout="wide", page_title="OA Sniper Dashboard")
 
 # ==========================================
-# 1. AUTO REFRESH
-# ==========================================
-st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
-
-# ==========================================
-# 2. FYERS API CREDENTIALS
+# 1. FYERS API CREDENTIALS
 # ==========================================
 CLIENT_ID = "BT8FRQLN19-200"  # உங்களின் Algo App ID
 SECRET_KEY = "0ivLeQN8vdI2VyKA" # உங்களின் Algo Secret Key
-
-# ஸ்லாஷ் இல்லாத பழைய ஒரிஜினல் லிங்க்
 REDIRECT_URI = "https://oa-sniper.streamlit.app" 
 EXPIRY = "26813" 
 
 # ==========================================
-# லூப் எரர் இல்லாத, மிக எளிய லாகின் சிஸ்டம்
+# 2. லூப் எரர் இல்லாத பாதுகாப்பான லாகின்
 # ==========================================
-def fyers_auto_login():
-    # ஏற்கனவே லாகின் ஆகியிருந்தால், டோக்கனைத் திருப்பி அனுப்பு
-    if 'access_token' in st.session_state: 
-        return st.session_state['access_token']
-    
-    # URL-ல் auth_code இருந்தால், டோக்கனை உருவாக்கு (எரர் வரக்கூடாது என்பதால் URL-ஐ கிளியர் செய்யவில்லை)
+if 'access_token' not in st.session_state:
     if 'auth_code' in st.query_params:
         auth_code = st.query_params['auth_code']
         session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
@@ -40,19 +28,28 @@ def fyers_auto_login():
         
         if 'access_token' in res:
             st.session_state['access_token'] = res['access_token']
-            return res['access_token']
-    
-    # லாகின் ஆகவில்லை என்றால் பட்டனைக் காட்டு
-    session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
-    auth_link = session.generate_authcode()
-    st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
-    st.stop()
-
-# Fyers Model-ஐ துவங்குதல்
-fyers = fyersModel.FyersModel(client_id=CLIENT_ID, is_async=False, token=fyers_auto_login(), log_path="")
+            # லூப் வராமல் தடுக்க URL-ஐ கிளியர் செய்துவிட்டு மீண்டும் ரன் செய்கிறோம்
+            st.query_params.clear()
+            st.rerun()
+        else:
+            st.error("Login Failed! Please try again.")
+            st.stop()
+    else:
+        session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
+        auth_link = session.generate_authcode()
+        st.warning("⚠️ டேஷ்போர்டைப் பார்க்க லாகின் செய்யவும்.")
+        st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
+        st.stop() # லாகின் ஆகும் வரை கோட் இங்கே நின்றுவிடும்
 
 # ==========================================
-# 3. GET NIFTY SPOT & CALCULATE STRIKES
+# 3. லாகின் ஆன பிறகு மட்டுமே AUTO REFRESH ஓட வேண்டும்
+# ==========================================
+st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
+
+fyers = fyersModel.FyersModel(client_id=CLIENT_ID, is_async=False, token=st.session_state['access_token'], log_path="")
+
+# ==========================================
+# 4. GET NIFTY SPOT & CALCULATE STRIKES
 # ==========================================
 spot_price = 24200.0
 try:
@@ -70,7 +67,7 @@ elif strike_type == "OTM": selected_strike = atm_strike + 50
 else: selected_strike = atm_strike
 
 # ==========================================
-# 4. FETCH SELECTED STRIKE OI & 3-MIN LOGIC
+# 5. FETCH SELECTED STRIKE OI & 3-MIN LOGIC
 # ==========================================
 ce_sym = f"NSE:NIFTY{EXPIRY}{selected_strike}CE"
 pe_sym = f"NSE:NIFTY{EXPIRY}{selected_strike}PE"
@@ -101,7 +98,7 @@ ce_3min_diff = st.session_state.tracker['ce_diff']
 pe_3min_diff = st.session_state.tracker['pe_diff']
 
 # ==========================================
-# 5. 5-COLUMN UI DESIGN
+# 6. 5-COLUMN UI DESIGN
 # ==========================================
 st.markdown("---")
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -131,7 +128,7 @@ with c5:
 st.markdown("---")
 
 # ==========================================
-# 6. CHART WITH AUTO SUPPORT/RESISTANCE
+# 7. CHART WITH AUTO SUPPORT/RESISTANCE
 # ==========================================
 symbols_list = [f"NSE:NIFTY{EXPIRY}{atm_strike + (i * 50)}CE" for i in range(-10, 11)] + [f"NSE:NIFTY{EXPIRY}{atm_strike + (i * 50)}PE" for i in range(-10, 11)]
 max_ce_oi, max_pe_oi, res_strike, sup_strike = 0, 0, 0, 0
