@@ -11,8 +11,8 @@ st.set_page_config(layout="wide", page_title="OA Sniper Dashboard")
 # ==========================================
 # 1. FYERS API CREDENTIALS
 # ==========================================
-CLIENT_ID = "BT8FRQLN19-200"  # உங்களின் Algo App ID
-SECRET_KEY = "0ivLeQN8vdI2VyKA" # உங்களின் Algo Secret Key
+CLIENT_ID = "JFBDGDNQ04-100"  # உங்களின் Algo App ID
+SECRET_KEY = "SENO8XK3VL" # உங்களின் Algo Secret Key
 REDIRECT_URI = "https://oa-sniper.streamlit.app" 
 EXPIRY = "26813" 
 
