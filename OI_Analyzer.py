@@ -11,13 +11,13 @@ st.set_page_config(layout="wide", page_title="OA Sniper Dashboard")
 # ==========================================
 # 1. FYERS API CREDENTIALS
 # ==========================================
-CLIENT_ID = "JFBDGDNQ04-100"  # உங்களின் Algo App ID
-SECRET_KEY = "SENO8XK3VL" # உங்களின் Algo Secret Key
+CLIENT_ID = "JFBDGDNQ04-100"  # Enter your Algo App ID here
+SECRET_KEY = "SENO8XK3VL" # Enter your Algo Secret Key here
 REDIRECT_URI = "https://oa-sniper.streamlit.app" 
 EXPIRY = "26813" 
 
 # ==========================================
-# 2. லூப் எரர் இல்லாத பாதுகாப்பான லாகின்
+# 2. SAFE LOGIN SYSTEM (NO REDIRECT LOOP)
 # ==========================================
 if 'access_token' not in st.session_state:
     if 'auth_code' in st.query_params:
@@ -28,7 +28,7 @@ if 'access_token' not in st.session_state:
         
         if 'access_token' in res:
             st.session_state['access_token'] = res['access_token']
-            # லூப் வராமல் தடுக்க URL-ஐ கிளியர் செய்துவிட்டு மீண்டும் ரன் செய்கிறோம்
+            # Clear URL to prevent redirect loops and rerun
             st.query_params.clear()
             st.rerun()
         else:
@@ -37,12 +37,12 @@ if 'access_token' not in st.session_state:
     else:
         session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
         auth_link = session.generate_authcode()
-        st.warning("⚠️ டேஷ்போர்டைப் பார்க்க லாகின் செய்யவும்.")
+        st.warning("⚠️ Please login to view the dashboard.")
         st.markdown(f'<a href="{auth_link}" target="_self"><button style="background-color:#4CAF50; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer;">🚀 Login with Fyers</button></a>', unsafe_allow_html=True)
-        st.stop() # லாகின் ஆகும் வரை கோட் இங்கே நின்றுவிடும்
+        st.stop() # Execution stops here until logged in
 
 # ==========================================
-# 3. லாகின் ஆன பிறகு மட்டுமே AUTO REFRESH ஓட வேண்டும்
+# 3. AUTO REFRESH (RUNS ONLY AFTER LOGIN)
 # ==========================================
 st_autorefresh(interval=10000, limit=2000, key="auto_refresh")
 
@@ -166,4 +166,4 @@ if not df.empty:
     fig.update_layout(xaxis_rangeslider_visible=False, height=500, margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning("மார்க்கெட் நேரம் முடிந்ததால் சார்ட் டேட்டா கிடைக்கவில்லை.")
+    st.warning("Chart data is not available as market hours have ended.")
