@@ -30,8 +30,8 @@ st.set_page_config(
 # in your FYERS API application.
 # ============================================================
 
-CLIENT_ID = "YOUR_APP_ID-100"
-SECRET_KEY = "YOUR_SECRET_KEY"
+CLIENT_ID = "JFBDGDNQ04-100"
+SECRET_KEY = "SENO8XK3VL"
 REDIRECT_URI = "https://oa-sniper.streamlit.app"
 
 # ============================================================
