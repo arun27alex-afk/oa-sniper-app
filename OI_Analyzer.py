@@ -6,220 +6,375 @@ import pandas as pd
 import datetime
 import time
 
+
 # ============================================================
 # PAGE SETTINGS
 # ============================================================
 st.set_page_config(
     layout="wide",
     page_title="Sniper OI Pro Dashboard",
-    page_icon="🎯"
+    page_icon="🎯",
 )
+
+
+# ============================================================
+# HEADER
+# ============================================================
+st.markdown(
+    """
+    <h1 style="text-align:center; margin-bottom:0;">
+        🎯 Sniper OI Pro Dashboard
+    </h1>
+
+    <p style="
+        text-align:center;
+        color:#64748b;
+        margin-top:6px;
+    ">
+        NIFTY Option Interest • Live Structure • Support / Resistance
+    </p>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # ============================================================
 # FYERS CREDENTIALS
-# ============================================================
-# IMPORTANT:
-# Replace these 3 values with your actual FYERS App details.
 #
-# Example:
-# CLIENT_ID = "JFBDGDNQ04-100"
-# SECRET_KEY = "SENO8XK3VL"
-# REDIRECT_URI = "https://oa-sniper.streamlit.app"
+# DO NOT PUT SECRET DIRECTLY IN GITHUB.
 #
-# The REDIRECT_URI must EXACTLY match the URI configured
-# in your FYERS API application.
+# Add these in Streamlit:
+#
+# Settings → Secrets
+#
+# FYERS_CLIENT_ID = "XXXX-100"
+# FYERS_SECRET_KEY = "XXXX"
+# FYERS_REDIRECT_URI = "https://oa-sniper.streamlit.app"
+#
 # ============================================================
+try:
 
-CLIENT_ID = "JFBDGDNQ04-100"
-SECRET_KEY = "SENO8XK3VL"
-REDIRECT_URI = "https://oa-sniper.streamlit.app"
+    CLIENT_ID = st.secrets["FYERS_CLIENT_ID"]
+    SECRET_KEY = st.secrets["FYERS_SECRET_KEY"]
+    REDIRECT_URI = st.secrets["FYERS_REDIRECT_URI"]
 
-# ============================================================
-# LOGIN
-# ============================================================
-def fyers_auto_login():
-
-    # Already logged in
-    if "access_token" in st.session_state:
-        return st.session_state["access_token"]
-
-    # --------------------------------------------------------
-    # After FYERS redirects back to Streamlit
-    # --------------------------------------------------------
-    if "auth_code" in st.query_params:
-
-        auth_code = st.query_params["auth_code"]
-
-        try:
-            session = fyersModel.SessionModel(
-                client_id=CLIENT_ID,
-                secret_key=SECRET_KEY,
-                redirect_uri=REDIRECT_URI,
-                response_type="code",
-                grant_type="authorization_code"
-            )
-
-            session.set_token(auth_code)
-
-            token_response = session.generate_token()
-
-            # ------------------------------------------------
-            # Check token response
-            # ------------------------------------------------
-            if (
-                isinstance(token_response, dict)
-                and token_response.get("s") == "ok"
-                and "access_token" in token_response
-            ):
-
-                st.session_state["access_token"] = token_response["access_token"]
-
-                # Remove auth_code from URL
-                st.query_params.clear()
-
-                st.rerun()
-
-            else:
-                st.error("❌ FYERS Token Generation Failed")
-                st.write("FYERS Response:")
-                st.json(token_response)
-                st.stop()
-
-        except Exception as e:
-
-            st.error("❌ Error while generating FYERS access token")
-            st.exception(e)
-            st.stop()
-
-    # --------------------------------------------------------
-    # First time login
-    # --------------------------------------------------------
-    try:
-
-        session = fyersModel.SessionModel(
-            client_id=CLIENT_ID,
-            secret_key=SECRET_KEY,
-            redirect_uri=REDIRECT_URI,
-            response_type="code",
-            grant_type="authorization_code"
-        )
-
-        auth_link = session.generate_authcode()
-
-        st.markdown(
-            f"""
-            <div style="
-                display:flex;
-                justify-content:center;
-                margin-top:120px;
-            ">
-                <a href="{auth_link}" target="_self">
-                    <button style="
-                        background:#16a34a;
-                        color:white;
-                        border:none;
-                        padding:16px 30px;
-                        border-radius:10px;
-                        font-size:20px;
-                        cursor:pointer;
-                    ">
-                        🚀 Login with FYERS
-                    </button>
-                </a>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        st.info(
-            "Click the button above, complete FYERS login, "
-            "and you will be redirected back to this dashboard."
-        )
-
-        st.stop()
-
-    except Exception as e:
-
-        st.error("❌ Unable to create FYERS login URL")
-        st.exception(e)
-        st.stop()
-
-
-# ============================================================
-# CHECK CREDENTIALS
-# ============================================================
-if (
-    CLIENT_ID == "YOUR_APP_ID-100"
-    or SECRET_KEY == "YOUR_SECRET_KEY"
-):
+except Exception:
 
     st.error(
-        "❌ Please enter your real FYERS CLIENT_ID and SECRET_KEY "
-        "at the top of the code."
+        "❌ FYERS credentials are missing from Streamlit Secrets."
+    )
+
+    st.code(
+        """
+FYERS_CLIENT_ID = "YOUR_APP_ID-100"
+FYERS_SECRET_KEY = "YOUR_SECRET_KEY"
+FYERS_REDIRECT_URI = "https://oa-sniper.streamlit.app"
+        """.strip(),
+        language="toml",
     )
 
     st.stop()
 
 
 # ============================================================
-# LOGIN + FYERS CLIENT
+# CREATE FYERS SESSION
 # ============================================================
-access_token = fyers_auto_login()
+def create_fyers_session():
 
+    return fyersModel.SessionModel(
+        client_id=CLIENT_ID,
+        secret_key=SECRET_KEY,
+        redirect_uri=REDIRECT_URI,
+        response_type="code",
+        grant_type="authorization_code",
+        state="sniper_oi",
+    )
+
+
+# ============================================================
+# FYERS LOGIN
+# ============================================================
+def fyers_login():
+
+    # --------------------------------------------------------
+    # TOKEN ALREADY AVAILABLE
+    # --------------------------------------------------------
+    if st.session_state.get("access_token"):
+
+        return st.session_state["access_token"]
+
+
+    # --------------------------------------------------------
+    # FYERS CALLBACK
+    # --------------------------------------------------------
+    auth_code = st.query_params.get("auth_code")
+
+    if auth_code:
+
+        with st.status(
+            "🔄 FYERS callback received. Generating access token...",
+            expanded=True,
+        ) as status:
+
+            try:
+
+                session = create_fyers_session()
+
+                session.set_token(auth_code)
+
+                token_response = session.generate_token()
+
+
+                if (
+                    isinstance(token_response, dict)
+                    and token_response.get("s") == "ok"
+                    and token_response.get("access_token")
+                ):
+
+                    st.session_state["access_token"] = (
+                        token_response["access_token"]
+                    )
+
+                    st.session_state.pop(
+                        "fyers_profile_verified",
+                        None,
+                    )
+
+                    # Remove auth_code from browser URL
+                    st.query_params.clear()
+
+                    status.update(
+                        label="✅ FYERS access token generated",
+                        state="complete",
+                        expanded=False,
+                    )
+
+                    time.sleep(0.5)
+
+                    st.rerun()
+
+
+                # Token failed
+                st.error(
+                    "❌ FYERS token generation failed."
+                )
+
+                st.json(token_response)
+
+                status.update(
+                    label="❌ FYERS token generation failed",
+                    state="error",
+                    expanded=True,
+                )
+
+                st.stop()
+
+
+            except Exception as e:
+
+                status.update(
+                    label="❌ Exception during FYERS token generation",
+                    state="error",
+                    expanded=True,
+                )
+
+                st.exception(e)
+
+                st.stop()
+
+
+    # --------------------------------------------------------
+    # FIRST LOGIN
+    # --------------------------------------------------------
+    try:
+
+        session = create_fyers_session()
+
+        auth_link = session.generate_authcode()
+
+        st.info(
+            "FYERS login is required. "
+            "Click the button below and complete login."
+        )
+
+        st.link_button(
+            "🚀 Login with FYERS",
+            auth_link,
+            type="primary",
+            use_container_width=True,
+        )
+
+        st.stop()
+
+
+    except Exception as e:
+
+        st.error(
+            "❌ Unable to create FYERS login URL."
+        )
+
+        st.exception(e)
+
+        st.stop()
+
+
+# ============================================================
+# GET ACCESS TOKEN
+# ============================================================
+access_token = fyers_login()
+
+
+# ============================================================
+# CREATE FYERS CLIENT
+# ============================================================
 try:
 
     fyers = fyersModel.FyersModel(
         client_id=CLIENT_ID,
         is_async=False,
         token=access_token,
-        log_path=""
+        log_path="",
     )
 
 except Exception as e:
 
-    st.error("❌ Unable to initialize FYERS")
+    st.error(
+        "❌ Unable to initialize FYERS."
+    )
+
     st.exception(e)
+
     st.stop()
 
 
 # ============================================================
-# TEST FYERS PROFILE
+# VALIDATE FYERS TOKEN
+#
+# IMPORTANT:
+# Do profile check ONLY ONCE per Streamlit session.
+# Don't hit profile API every 10 seconds.
 # ============================================================
-try:
+if not st.session_state.get(
+    "fyers_profile_verified"
+):
 
-    profile_response = fyers.get_profile()
+    with st.status(
+        "🔄 Validating FYERS connection...",
+        expanded=True,
+    ) as status:
 
-    if profile_response.get("s") != "ok":
+        try:
 
-        st.error("❌ FYERS login/token is not valid")
+            profile_response = fyers.get_profile()
 
-        st.write("FYERS Profile Response:")
-        st.json(profile_response)
 
-        if "access_token" in st.session_state:
-            del st.session_state["access_token"]
+            if (
+                isinstance(profile_response, dict)
+                and profile_response.get("s") == "ok"
+            ):
 
-        st.stop()
+                st.session_state[
+                    "fyers_profile_verified"
+                ] = True
 
-except Exception as e:
+                status.update(
+                    label="✅ FYERS connected successfully",
+                    state="complete",
+                    expanded=False,
+                )
 
-    st.error("❌ FYERS profile test failed")
-    st.exception(e)
-    st.stop()
+
+            else:
+
+                st.error(
+                    "❌ FYERS token/profile validation failed."
+                )
+
+                st.json(profile_response)
+
+                st.session_state.pop(
+                    "access_token",
+                    None,
+                )
+
+                st.session_state.pop(
+                    "fyers_profile_verified",
+                    None,
+                )
+
+                status.update(
+                    label="❌ FYERS validation failed",
+                    state="error",
+                    expanded=True,
+                )
+
+                st.stop()
+
+
+        except Exception as e:
+
+            status.update(
+                label="❌ FYERS profile API failed",
+                state="error",
+                expanded=True,
+            )
+
+            st.exception(e)
+
+            st.stop()
 
 
 # ============================================================
-# SUCCESS STATUS
+# CONNECTION STATUS
 # ============================================================
-st.success("✅ FYERS Login Successful")
+top_left, top_right = st.columns(
+    [4, 1]
+)
+
+
+with top_left:
+
+    st.success(
+        "✅ FYERS Connected"
+    )
+
+
+with top_right:
+
+    if st.button(
+        "🔄 Re-login FYERS",
+        use_container_width=True,
+    ):
+
+        st.session_state.pop(
+            "access_token",
+            None,
+        )
+
+        st.session_state.pop(
+            "fyers_profile_verified",
+            None,
+        )
+
+        st.session_state.pop(
+            "oi_history",
+            None,
+        )
+
+        st.query_params.clear()
+
+        st.rerun()
+
 
 # ============================================================
 # AUTO REFRESH
+#
+# 10 seconds
 # ============================================================
 st_autorefresh(
     interval=10000,
     limit=2000,
-    key="sniper_refresh"
+    key="sniper_refresh",
 )
 
 
@@ -228,34 +383,52 @@ st_autorefresh(
 # ============================================================
 spot_price = 0.0
 
+quote_response = {}
+
+
 try:
 
     quote_response = fyers.quotes(
+
         data={
             "symbols": "NSE:NIFTY50-INDEX"
         }
+
     )
+
 
     if (
         isinstance(quote_response, dict)
         and quote_response.get("s") == "ok"
-        and len(quote_response.get("d", [])) > 0
+        and quote_response.get("d")
     ):
 
         nifty_data = quote_response["d"][0]
 
         spot_price = float(
-            nifty_data["v"].get("lp", 0)
+
+            nifty_data
+            .get("v", {})
+            .get("lp", 0)
+
+            or 0
+
         )
+
 
     else:
 
-        st.warning("⚠️ Unable to get NIFTY spot price")
-        st.json(quote_response)
+        st.warning(
+            "⚠️ Unable to get NIFTY spot price."
+        )
+
 
 except Exception as e:
 
-    st.error("❌ NIFTY quote error")
+    st.error(
+        "❌ NIFTY quote error."
+    )
+
     st.exception(e)
 
 
@@ -264,7 +437,11 @@ except Exception as e:
 # ============================================================
 if spot_price > 0:
 
-    atm_strike = int(round(spot_price / 50.0) * 50)
+    atm_strike = int(
+        round(
+            spot_price / 50.0
+        ) * 50
+    )
 
 else:
 
@@ -272,245 +449,908 @@ else:
 
 
 # ============================================================
-# HEADER
+# DISPLAY NIFTY SPOT
 # ============================================================
 st.markdown(
-    f"""
-    <h1 style="text-align:center;">
-        🎯 Sniper OI Pro Dashboard
-    </h1>
 
-    <h2 style="text-align:center;">
+    f"""
+    <h2 style="
+        text-align:center;
+        margin-top:4px;
+    ">
+
         NIFTY Spot:
-        <span style="color:#2563eb;">
+
+        <span style="
+            color:#2563eb;
+        ">
             {spot_price:.2f}
         </span>
+
     </h2>
     """,
-    unsafe_allow_html=True
+
+    unsafe_allow_html=True,
+
 )
 
 
 # ============================================================
-# STRIKE SELECTION
+# FIRST OPTION CHAIN CALL
+#
+# This gets:
+#
+# 1. Current option chain
+# 2. Available expiry list
+#
 # ============================================================
-strike_type = st.radio(
-    "Select Strike Type:",
-    ["ITM", "ATM", "OTM"],
-    horizontal=True,
-    index=1
-)
+base_option_chain_response = {}
 
-
-if strike_type == "ITM":
-
-    selected_strike = atm_strike - 50
-
-elif strike_type == "OTM":
-
-    selected_strike = atm_strike + 50
-
-else:
-
-    selected_strike = atm_strike
-
-
-# ============================================================
-# EXPIRY SELECTION
-# ============================================================
-st.markdown("### 📅 Expiry")
-
-expiry_input = st.text_input(
-    "Enter expiry in FYERS format if required",
-    value="",
-    help=(
-        "Leave this empty when using the Option Chain API. "
-        "The API will return the currently available chain."
-    )
-)
-
-# ============================================================
-# FETCH OPTION CHAIN
-# ============================================================
-option_chain_df = pd.DataFrame()
-
-option_chain_response = {}
 
 try:
 
-    option_chain_request = {
-        "symbol": "NSE:NIFTY50-INDEX",
-        "strikecount": 25,
-        "timestamp": ""
-    }
+    base_option_chain_response = (
+        fyers.optionchain(
 
-    option_chain_response = fyers.optionchain(
-        data=option_chain_request
+            data={
+                "symbol": "NSE:NIFTY50-INDEX",
+                "strikecount": 25,
+                "timestamp": "",
+            }
+
+        )
     )
 
-    if (
-        isinstance(option_chain_response, dict)
-        and option_chain_response.get("s") == "ok"
-    ):
-
-        options_data = (
-            option_chain_response
-            .get("data", {})
-            .get("optionsChain", [])
-        )
-
-        if options_data:
-
-            option_chain_df = pd.DataFrame(options_data)
-
-        else:
-
-            st.warning("⚠️ Option Chain returned no data.")
-
-    else:
-
-        st.error("❌ Option Chain API failed")
-
-        st.json(option_chain_response)
 
 except Exception as e:
 
-    st.error("❌ Option Chain API Error")
+    st.error(
+        "❌ Initial Option Chain API Error."
+    )
+
     st.exception(e)
 
 
 # ============================================================
-# CLEAN OPTION CHAIN
+# EXPIRY HELPERS
 # ============================================================
+def get_expiry_timestamp(item):
+
+    for key in (
+
+        "expiry",
+        "timestamp",
+        "expiryTimestamp",
+        "expiry_timestamp",
+
+    ):
+
+        value = item.get(key)
+
+        if value not in (
+            None,
+            "",
+        ):
+
+            return value
+
+    return ""
+
+
+def get_expiry_label(item):
+
+    for key in (
+
+        "date",
+        "expiryDate",
+        "expiry_date",
+        "displayDate",
+        "display_date",
+
+    ):
+
+        value = item.get(key)
+
+        if value:
+
+            return str(value)
+
+
+    timestamp = get_expiry_timestamp(
+        item
+    )
+
+
+    if timestamp:
+
+        try:
+
+            ts = int(
+                float(timestamp)
+            )
+
+            dt = datetime.datetime.fromtimestamp(
+
+                ts,
+
+                tz=datetime.timezone.utc,
+
+            )
+
+            ist = dt.astimezone(
+
+                datetime.timezone(
+                    datetime.timedelta(
+                        hours=5,
+                        minutes=30,
+                    )
+                )
+
+            )
+
+            return ist.strftime(
+                "%d-%b-%Y"
+            )
+
+
+        except Exception:
+
+            return str(timestamp)
+
+
+    return "Current Expiry"
+
+
+# ============================================================
+# READ EXPIRY DATA
+# ============================================================
+expiry_data = []
+
+
+if (
+    isinstance(
+        base_option_chain_response,
+        dict,
+    )
+    and base_option_chain_response.get(
+        "s"
+    ) == "ok"
+):
+
+    expiry_data = (
+
+        base_option_chain_response
+        .get("data", {})
+        .get("expiryData", [])
+
+        or []
+
+    )
+
+
+# ============================================================
+# USER CONTROLS
+# ============================================================
+control1, control2 = st.columns(
+    2
+)
+
+
+# ============================================================
+# STRIKE TYPE
+# ============================================================
+with control1:
+
+    strike_type = st.radio(
+
+        "Select Strike Type",
+
+        [
+            "ITM",
+            "ATM",
+            "OTM",
+        ],
+
+        horizontal=True,
+
+        index=1,
+
+    )
+
+
+# ============================================================
+# EXPIRY SELECT
+# ============================================================
+with control2:
+
+    if expiry_data:
+
+        expiry_labels = [
+
+            get_expiry_label(item)
+
+            for item
+            in expiry_data
+
+        ]
+
+
+        selected_expiry_index = (
+            st.selectbox(
+
+                "Select Expiry",
+
+                options=list(
+                    range(
+                        len(expiry_data)
+                    )
+                ),
+
+                format_func=lambda i:
+                    expiry_labels[i],
+
+                index=0,
+
+            )
+        )
+
+
+        selected_expiry_item = (
+            expiry_data[
+                selected_expiry_index
+            ]
+        )
+
+
+        selected_expiry_timestamp = (
+            get_expiry_timestamp(
+                selected_expiry_item
+            )
+        )
+
+
+        selected_expiry_label = (
+            expiry_labels[
+                selected_expiry_index
+            ]
+        )
+
+
+    else:
+
+        selected_expiry_timestamp = ""
+
+        selected_expiry_label = (
+            "Current Expiry"
+        )
+
+
+        st.text_input(
+
+            "Expiry",
+
+            value=selected_expiry_label,
+
+            disabled=True,
+
+        )
+
+
+# ============================================================
+# CE / PE STRIKE LOGIC
+#
+# IMPORTANT:
+#
+# For CALL:
+# ITM = ATM - 50
+# OTM = ATM + 50
+#
+# For PUT:
+# ITM = ATM + 50
+# OTM = ATM - 50
+#
+# ============================================================
+if strike_type == "ITM":
+
+    ce_selected_strike = (
+        atm_strike - 50
+    )
+
+    pe_selected_strike = (
+        atm_strike + 50
+    )
+
+
+elif strike_type == "OTM":
+
+    ce_selected_strike = (
+        atm_strike + 50
+    )
+
+    pe_selected_strike = (
+        atm_strike - 50
+    )
+
+
+else:
+
+    ce_selected_strike = (
+        atm_strike
+    )
+
+    pe_selected_strike = (
+        atm_strike
+    )
+
+
+# ============================================================
+# FETCH SELECTED EXPIRY OPTION CHAIN
+# ============================================================
+option_chain_response = (
+    base_option_chain_response
+)
+
+
+if selected_expiry_timestamp:
+
+    try:
+
+        selected_chain_response = (
+            fyers.optionchain(
+
+                data={
+                    "symbol":
+                        "NSE:NIFTY50-INDEX",
+
+                    "strikecount":
+                        25,
+
+                    "timestamp":
+                        selected_expiry_timestamp,
+                }
+
+            )
+        )
+
+
+        if (
+
+            isinstance(
+                selected_chain_response,
+                dict,
+            )
+
+            and selected_chain_response
+            .get("s") == "ok"
+
+        ):
+
+            option_chain_response = (
+                selected_chain_response
+            )
+
+
+        else:
+
+            st.warning(
+
+                "⚠️ Selected expiry chain failed. "
+                "Showing default current chain."
+
+            )
+
+
+    except Exception as e:
+
+        st.warning(
+
+            "⚠️ Selected expiry request failed. "
+            "Showing default current chain."
+
+        )
+
+
+        with st.expander(
+            "Selected Expiry Error"
+        ):
+
+            st.exception(e)
+
+
+# ============================================================
+# CREATE OPTION CHAIN DATAFRAME
+# ============================================================
+option_chain_df = pd.DataFrame()
+
+
+if (
+
+    isinstance(
+        option_chain_response,
+        dict,
+    )
+
+    and option_chain_response.get(
+        "s"
+    ) == "ok"
+
+):
+
+    options_data = (
+
+        option_chain_response
+        .get("data", {})
+        .get("optionsChain", [])
+
+        or []
+
+    )
+
+
+    if options_data:
+
+        option_chain_df = (
+            pd.DataFrame(
+                options_data
+            )
+        )
+
+
+    else:
+
+        st.warning(
+            "⚠️ Option Chain returned no data."
+        )
+
+
+else:
+
+    st.error(
+        "❌ Option Chain API failed."
+    )
+
+
+# ============================================================
+# NORMALIZE COLUMN NAMES
+#
+# Handles small FYERS naming variations
+# ============================================================
+column_aliases = {
+
+    "strikePrice":
+        "strike_price",
+
+    "strike":
+        "strike_price",
+
+    "optionType":
+        "option_type",
+
+    "last_price":
+        "ltp",
+
+    "lastPrice":
+        "ltp",
+
+    "open_interest":
+        "oi",
+
+    "openInterest":
+        "oi",
+
+}
+
+
 if not option_chain_df.empty:
 
-    # Convert numeric columns
+    rename_map = {
+
+        old: new
+
+        for old, new
+        in column_aliases.items()
+
+        if old
+        in option_chain_df.columns
+
+        and new
+        not in option_chain_df.columns
+
+    }
+
+
+    if rename_map:
+
+        option_chain_df = (
+            option_chain_df.rename(
+                columns=rename_map
+            )
+        )
+
+
+    # --------------------------------------------------------
+    # CONVERT NUMERIC COLUMNS
+    # --------------------------------------------------------
     for col in [
+
         "strike_price",
         "ltp",
         "oi",
-        "volume"
+        "volume",
+
     ]:
 
         if col in option_chain_df.columns:
 
-            option_chain_df[col] = pd.to_numeric(
-                option_chain_df[col],
-                errors="coerce"
+            option_chain_df[col] = (
+                pd.to_numeric(
+
+                    option_chain_df[col],
+
+                    errors="coerce",
+
+                )
             )
 
-    # Keep only CE / PE
+
+    # --------------------------------------------------------
+    # KEEP ONLY CE / PE
+    # --------------------------------------------------------
     if "option_type" in option_chain_df.columns:
 
-        option_chain_df = option_chain_df[
-            option_chain_df["option_type"].isin(
-                ["CE", "PE"]
-            )
-        ].copy()
+        option_chain_df[
+            "option_type"
+        ] = (
 
+            option_chain_df[
+                "option_type"
+            ]
 
-# ============================================================
-# FIND SELECTED STRIKE DATA
-# ============================================================
-ce_oi = 0
-pe_oi = 0
-ce_ltp = 0.0
-pe_ltp = 0.0
-ce_oi_chg = 0
-pe_oi_chg = 0
+            .astype(str)
 
-if not option_chain_df.empty:
+            .str.upper()
 
-    # --------------------------------------------------------
-    # CE
-    # --------------------------------------------------------
-    ce_rows = option_chain_df[
-        (option_chain_df["option_type"] == "CE")
-        &
-        (
-            option_chain_df["strike_price"]
-            == selected_strike
-        )
-    ]
+            .str.strip()
 
-    if not ce_rows.empty:
-
-        ce_oi = int(
-            ce_rows.iloc[0].get("oi", 0)
-            or 0
         )
 
-        ce_ltp = float(
-            ce_rows.iloc[0].get("ltp", 0)
-            or 0
-        )
 
-    # --------------------------------------------------------
-    # PE
-    # --------------------------------------------------------
-    pe_rows = option_chain_df[
-        (option_chain_df["option_type"] == "PE")
-        &
-        (
-            option_chain_df["strike_price"]
-            == selected_strike
-        )
-    ]
+        option_chain_df = (
 
-    if not pe_rows.empty:
+            option_chain_df[
 
-        pe_oi = int(
-            pe_rows.iloc[0].get("oi", 0)
-            or 0
-        )
+                option_chain_df[
+                    "option_type"
+                ].isin(
+                    [
+                        "CE",
+                        "PE",
+                    ]
+                )
 
-        pe_ltp = float(
-            pe_rows.iloc[0].get("ltp", 0)
-            or 0
+            ]
+
+            .copy()
+
         )
 
 
 # ============================================================
-# 3-MIN OI TRACKER
+# SAFE HELPERS
 # ============================================================
-if "oi_tracker" not in st.session_state:
+def find_option_row(
+    df,
+    option_type,
+    strike,
+):
 
-    st.session_state.oi_tracker = {
-        "ce_oi": ce_oi,
-        "pe_oi": pe_oi,
-        "timestamp": time.time(),
-        "ce_diff": 0,
-        "pe_diff": 0
+    required = {
+        "option_type",
+        "strike_price",
     }
 
 
-current_time = time.time()
+    if (
+        df.empty
+        or not required.issubset(
+            df.columns
+        )
+    ):
 
-elapsed_time = (
-    current_time
-    - st.session_state.oi_tracker["timestamp"]
+        return None
+
+
+    rows = df[
+
+        (
+            df["option_type"]
+            == option_type
+        )
+
+        &
+
+        (
+            df["strike_price"]
+            == strike
+        )
+
+    ]
+
+
+    if rows.empty:
+
+        return None
+
+
+    return rows.iloc[0]
+
+
+def safe_int(value):
+
+    try:
+
+        if pd.isna(value):
+
+            return 0
+
+        return int(
+            float(value)
+        )
+
+    except Exception:
+
+        return 0
+
+
+def safe_float(value):
+
+    try:
+
+        if pd.isna(value):
+
+            return 0.0
+
+        return float(value)
+
+    except Exception:
+
+        return 0.0
+
+
+# ============================================================
+# GET SELECTED CE / PE DATA
+# ============================================================
+ce_oi = 0
+pe_oi = 0
+
+ce_ltp = 0.0
+pe_ltp = 0.0
+
+
+ce_row = find_option_row(
+
+    option_chain_df,
+
+    "CE",
+
+    ce_selected_strike,
+
 )
 
 
-if elapsed_time >= 180:
+pe_row = find_option_row(
 
-    st.session_state.oi_tracker["ce_diff"] = (
+    option_chain_df,
+
+    "PE",
+
+    pe_selected_strike,
+
+)
+
+
+if ce_row is not None:
+
+    ce_oi = safe_int(
+        ce_row.get(
+            "oi",
+            0,
+        )
+    )
+
+    ce_ltp = safe_float(
+        ce_row.get(
+            "ltp",
+            0,
+        )
+    )
+
+
+if pe_row is not None:
+
+    pe_oi = safe_int(
+        pe_row.get(
+            "oi",
+            0,
+        )
+    )
+
+    pe_ltp = safe_float(
+        pe_row.get(
+            "ltp",
+            0,
+        )
+    )
+
+
+# ============================================================
+# TRUE ROLLING 3-MINUTE OI TRACKER
+#
+# Every refresh:
+#
+# Current OI
+#      -
+# OI approximately 180 seconds ago
+#
+# Automatically resets when:
+#
+# expiry changes
+# ITM / ATM / OTM changes
+# strike changes
+#
+# ============================================================
+current_time = time.time()
+
+
+oi_context_key = (
+
+    f"{selected_expiry_timestamp}|"
+
+    f"{strike_type}|"
+
+    f"CE:{ce_selected_strike}|"
+
+    f"PE:{pe_selected_strike}"
+
+)
+
+
+# ============================================================
+# RESET TRACKER WHEN CONTRACT CHANGES
+# ============================================================
+if (
+    st.session_state.get(
+        "oi_context_key"
+    )
+    != oi_context_key
+):
+
+    st.session_state[
+        "oi_context_key"
+    ] = oi_context_key
+
+    st.session_state[
+        "oi_history"
+    ] = []
+
+
+# ============================================================
+# GET OLD HISTORY
+# ============================================================
+oi_history = (
+    st.session_state.get(
+        "oi_history",
+        [],
+    )
+)
+
+
+# ============================================================
+# ADD CURRENT SAMPLE
+# ============================================================
+oi_history.append(
+
+    {
+
+        "timestamp":
+            current_time,
+
+        "ce_oi":
+            ce_oi,
+
+        "pe_oi":
+            pe_oi,
+
+    }
+
+)
+
+
+# ============================================================
+# KEEP ONLY LAST 10 MINUTES
+# ============================================================
+oi_history = [
+
+    sample
+
+    for sample
+    in oi_history
+
+    if (
+        current_time
+        - sample["timestamp"]
+        <= 600
+    )
+
+]
+
+
+st.session_state[
+    "oi_history"
+] = oi_history
+
+
+# ============================================================
+# FIND SAMPLE 3 MINUTES AGO
+# ============================================================
+target_time = (
+    current_time - 180
+)
+
+
+eligible_samples = [
+
+    sample
+
+    for sample
+    in oi_history
+
+    if (
+        sample["timestamp"]
+        <= target_time
+    )
+
+]
+
+
+if eligible_samples:
+
+    baseline = max(
+
+        eligible_samples,
+
+        key=lambda sample:
+            sample["timestamp"],
+
+    )
+
+
+    ce_3min_diff = (
+
         ce_oi
-        - st.session_state.oi_tracker["ce_oi"]
+        - baseline["ce_oi"]
+
     )
 
-    st.session_state.oi_tracker["pe_diff"] = (
+
+    pe_3min_diff = (
+
         pe_oi
-        - st.session_state.oi_tracker["pe_oi"]
+        - baseline["pe_oi"]
+
     )
 
-    st.session_state.oi_tracker["ce_oi"] = ce_oi
-    st.session_state.oi_tracker["pe_oi"] = pe_oi
-    st.session_state.oi_tracker["timestamp"] = current_time
+
+    oi_3min_ready = True
 
 
-ce_3min_diff = st.session_state.oi_tracker["ce_diff"]
-pe_3min_diff = st.session_state.oi_tracker["pe_diff"]
+else:
+
+    ce_3min_diff = 0
+
+    pe_3min_diff = 0
+
+    oi_3min_ready = False
 
 
 # ============================================================
@@ -518,112 +1358,326 @@ pe_3min_diff = st.session_state.oi_tracker["pe_diff"]
 # ============================================================
 st.markdown("---")
 
-c1, c2, c3, c4, c5 = st.columns(5)
+
+c1, c2, c3, c4, c5 = (
+    st.columns(5)
+)
 
 
+# ============================================================
+# CE OI
+# ============================================================
 with c1:
 
     st.markdown(
-        "<h4 style='text-align:center;color:red;'>CE OI</h4>",
-        unsafe_allow_html=True
+
+        """
+        <h4 style="
+            text-align:center;
+            color:#dc2626;
+        ">
+            CE OI
+        </h4>
+        """,
+
+        unsafe_allow_html=True,
+
     )
 
+
     st.markdown(
-        f"<h3 style='text-align:center;'>{ce_oi:,}</h3>",
-        unsafe_allow_html=True
+
+        f"""
+        <h3 style="
+            text-align:center;
+        ">
+            {ce_oi:,}
+        </h3>
+        """,
+
+        unsafe_allow_html=True,
+
     )
 
-    diff_color = "green" if ce_3min_diff > 0 else "red"
 
-    diff_sign = "+" if ce_3min_diff > 0 else ""
+    if oi_3min_ready:
+
+        diff_color = (
+
+            "#16a34a"
+
+            if ce_3min_diff > 0
+
+            else "#dc2626"
+
+        )
+
+
+        diff_sign = (
+
+            "+"
+
+            if ce_3min_diff > 0
+
+            else ""
+
+        )
+
+
+        diff_text = (
+
+            f"{diff_sign}"
+            f"{ce_3min_diff:,} in 3m"
+
+        )
+
+
+    else:
+
+        diff_color = "#64748b"
+
+        diff_text = (
+            "Building 3m baseline..."
+        )
+
 
     st.markdown(
+
         f"""
         <p style="
             text-align:center;
             color:{diff_color};
         ">
-            {diff_sign}{ce_3min_diff:,} in 3m
+            {diff_text}
         </p>
         """,
-        unsafe_allow_html=True
+
+        unsafe_allow_html=True,
+
     )
 
 
+# ============================================================
+# CE LTP
+# ============================================================
 with c2:
 
     st.markdown(
-        "<h4 style='text-align:center;color:red;'>CE LTP</h4>",
-        unsafe_allow_html=True
+
+        """
+        <h4 style="
+            text-align:center;
+            color:#dc2626;
+        ">
+            CE LTP
+        </h4>
+        """,
+
+        unsafe_allow_html=True,
+
     )
+
 
     st.markdown(
-        f"<h3 style='text-align:center;'>₹{ce_ltp:.2f}</h3>",
-        unsafe_allow_html=True
+
+        f"""
+        <h3 style="
+            text-align:center;
+        ">
+            ₹{ce_ltp:.2f}
+        </h3>
+        """,
+
+        unsafe_allow_html=True,
+
     )
 
 
+    st.caption(
+        f"Strike: {ce_selected_strike}"
+    )
+
+
+# ============================================================
+# ATM
+# ============================================================
 with c3:
 
     st.markdown(
-        "<h4 style='text-align:center;color:orange;'>STRIKE</h4>",
-        unsafe_allow_html=True
+
+        """
+        <h4 style="
+            text-align:center;
+            color:#f59e0b;
+        ">
+            ATM
+        </h4>
+        """,
+
+        unsafe_allow_html=True,
+
     )
 
+
     st.markdown(
+
         f"""
         <h2 style="
             text-align:center;
-            background:#f0f2f6;
+            background:#f1f5f9;
             padding:10px;
             border-radius:10px;
+            color:#0f172a;
         ">
-            {selected_strike}
+            {atm_strike}
         </h2>
         """,
-        unsafe_allow_html=True
+
+        unsafe_allow_html=True,
+
     )
 
 
+    st.caption(
+
+        f"{strike_type} | "
+        f"Expiry: "
+        f"{selected_expiry_label}"
+
+    )
+
+
+# ============================================================
+# PE LTP
+# ============================================================
 with c4:
 
     st.markdown(
-        "<h4 style='text-align:center;color:green;'>PE LTP</h4>",
-        unsafe_allow_html=True
+
+        """
+        <h4 style="
+            text-align:center;
+            color:#16a34a;
+        ">
+            PE LTP
+        </h4>
+        """,
+
+        unsafe_allow_html=True,
+
     )
+
 
     st.markdown(
-        f"<h3 style='text-align:center;'>₹{pe_ltp:.2f}</h3>",
-        unsafe_allow_html=True
+
+        f"""
+        <h3 style="
+            text-align:center;
+        ">
+            ₹{pe_ltp:.2f}
+        </h3>
+        """,
+
+        unsafe_allow_html=True,
+
     )
 
 
+    st.caption(
+        f"Strike: {pe_selected_strike}"
+    )
+
+
+# ============================================================
+# PE OI
+# ============================================================
 with c5:
 
     st.markdown(
-        "<h4 style='text-align:center;color:green;'>PE OI</h4>",
-        unsafe_allow_html=True
+
+        """
+        <h4 style="
+            text-align:center;
+            color:#16a34a;
+        ">
+            PE OI
+        </h4>
+        """,
+
+        unsafe_allow_html=True,
+
     )
 
+
     st.markdown(
-        f"<h3 style='text-align:center;'>{pe_oi:,}</h3>",
-        unsafe_allow_html=True
+
+        f"""
+        <h3 style="
+            text-align:center;
+        ">
+            {pe_oi:,}
+        </h3>
+        """,
+
+        unsafe_allow_html=True,
+
     )
 
-    diff_color = "green" if pe_3min_diff > 0 else "red"
 
-    diff_sign = "+" if pe_3min_diff > 0 else ""
+    if oi_3min_ready:
+
+        diff_color = (
+
+            "#16a34a"
+
+            if pe_3min_diff > 0
+
+            else "#dc2626"
+
+        )
+
+
+        diff_sign = (
+
+            "+"
+
+            if pe_3min_diff > 0
+
+            else ""
+
+        )
+
+
+        diff_text = (
+
+            f"{diff_sign}"
+            f"{pe_3min_diff:,} in 3m"
+
+        )
+
+
+    else:
+
+        diff_color = "#64748b"
+
+        diff_text = (
+            "Building 3m baseline..."
+        )
+
 
     st.markdown(
+
         f"""
         <p style="
             text-align:center;
             color:{diff_color};
         ">
-            {diff_sign}{pe_3min_diff:,} in 3m
+            {diff_text}
         </p>
         """,
-        unsafe_allow_html=True
+
+        unsafe_allow_html=True,
+
     )
 
 
@@ -631,7 +1685,7 @@ st.markdown("---")
 
 
 # ============================================================
-# FIND MAX CE OI / MAX PE OI
+# FIND MAX CE OI / PE OI
 # ============================================================
 max_ce_oi = 0
 max_pe_oi = 0
@@ -642,70 +1696,146 @@ sup_strike = 0
 
 if not option_chain_df.empty:
 
-    # --------------------------------------------------------
-    # Maximum CE OI
-    # --------------------------------------------------------
-    ce_df = option_chain_df[
-        option_chain_df["option_type"] == "CE"
-    ].copy()
+    required_cols = {
 
-    if not ce_df.empty:
+        "option_type",
+        "oi",
+        "strike_price",
 
-        ce_df = ce_df.dropna(
-            subset=["oi", "strike_price"]
+    }
+
+
+    if required_cols.issubset(
+        option_chain_df.columns
+    ):
+
+        # ----------------------------------------------------
+        # CE
+        # ----------------------------------------------------
+        ce_df = (
+
+            option_chain_df[
+
+                option_chain_df[
+                    "option_type"
+                ] == "CE"
+
+            ]
+
+            .dropna(
+                subset=[
+                    "oi",
+                    "strike_price",
+                ]
+            )
+
+            .copy()
+
         )
 
+
+        # ----------------------------------------------------
+        # PE
+        # ----------------------------------------------------
+        pe_df = (
+
+            option_chain_df[
+
+                option_chain_df[
+                    "option_type"
+                ] == "PE"
+
+            ]
+
+            .dropna(
+                subset=[
+                    "oi",
+                    "strike_price",
+                ]
+            )
+
+            .copy()
+
+        )
+
+
+        # ----------------------------------------------------
+        # MAX CE OI = RESISTANCE
+        # ----------------------------------------------------
         if not ce_df.empty:
 
             max_ce_row = ce_df.loc[
-                ce_df["oi"].idxmax()
+
+                ce_df[
+                    "oi"
+                ].idxmax()
+
             ]
 
-            max_ce_oi = int(
-                max_ce_row["oi"]
+
+            max_ce_oi = safe_int(
+
+                max_ce_row[
+                    "oi"
+                ]
+
             )
 
-            res_strike = int(
-                max_ce_row["strike_price"]
+
+            res_strike = safe_int(
+
+                max_ce_row[
+                    "strike_price"
+                ]
+
             )
 
-    # --------------------------------------------------------
-    # Maximum PE OI
-    # --------------------------------------------------------
-    pe_df = option_chain_df[
-        option_chain_df["option_type"] == "PE"
-    ].copy()
 
-    if not pe_df.empty:
-
-        pe_df = pe_df.dropna(
-            subset=["oi", "strike_price"]
-        )
-
+        # ----------------------------------------------------
+        # MAX PE OI = SUPPORT
+        # ----------------------------------------------------
         if not pe_df.empty:
 
             max_pe_row = pe_df.loc[
-                pe_df["oi"].idxmax()
+
+                pe_df[
+                    "oi"
+                ].idxmax()
+
             ]
 
-            max_pe_oi = int(
-                max_pe_row["oi"]
+
+            max_pe_oi = safe_int(
+
+                max_pe_row[
+                    "oi"
+                ]
+
             )
 
-            sup_strike = int(
-                max_pe_row["strike_price"]
+
+            sup_strike = safe_int(
+
+                max_pe_row[
+                    "strike_price"
+                ]
+
             )
 
 
 # ============================================================
-# SUPPORT / RESISTANCE DISPLAY
+# SUPPORT / RESISTANCE
 # ============================================================
 r1, r2 = st.columns(2)
 
 
+# ============================================================
+# RESISTANCE
+# ============================================================
 with r1:
 
     st.markdown(
+
         f"""
         <div style="
             background:#fee2e2;
@@ -714,28 +1844,45 @@ with r1:
             text-align:center;
         ">
 
-            <h4 style="color:#dc2626;">
-                🔴 Resistance - Highest CE OI
+            <h4 style="
+                color:#dc2626;
+            ">
+                🔴 Resistance
+                - Highest CE OI
             </h4>
 
-            <h2>
-                {res_strike if res_strike else "N/A"}
+            <h2 style="
+                color:#0f172a;
+            ">
+                {
+                    res_strike
+                    if res_strike
+                    else "N/A"
+                }
             </h2>
 
-            <p>
+            <p style="
+                color:#334155;
+            ">
                 OI:
                 {max_ce_oi:,}
             </p>
 
         </div>
         """,
-        unsafe_allow_html=True
+
+        unsafe_allow_html=True,
+
     )
 
 
+# ============================================================
+# SUPPORT
+# ============================================================
 with r2:
 
     st.markdown(
+
         f"""
         <div style="
             background:#dcfce7;
@@ -744,22 +1891,35 @@ with r2:
             text-align:center;
         ">
 
-            <h4 style="color:#16a34a;">
-                🟢 Support - Highest PE OI
+            <h4 style="
+                color:#16a34a;
+            ">
+                🟢 Support
+                - Highest PE OI
             </h4>
 
-            <h2>
-                {sup_strike if sup_strike else "N/A"}
+            <h2 style="
+                color:#0f172a;
+            ">
+                {
+                    sup_strike
+                    if sup_strike
+                    else "N/A"
+                }
             </h2>
 
-            <p>
+            <p style="
+                color:#334155;
+            ">
                 OI:
                 {max_pe_oi:,}
             </p>
 
         </div>
         """,
-        unsafe_allow_html=True
+
+        unsafe_allow_html=True,
+
     )
 
 
@@ -767,38 +1927,82 @@ with r2:
 # OPTION CHAIN TABLE
 # ============================================================
 st.markdown("---")
-st.markdown("### 📊 NIFTY Option Chain")
+
+st.markdown(
+    "### 📊 NIFTY Option Chain"
+)
 
 
 if not option_chain_df.empty:
 
-    table_columns = []
+    table_columns = [
 
-    for column in [
-        "symbol",
-        "option_type",
-        "strike_price",
-        "ltp",
-        "oi",
-        "volume"
-    ]:
+        column
 
-        if column in option_chain_df.columns:
+        for column in [
 
-            table_columns.append(column)
+            "symbol",
+            "option_type",
+            "strike_price",
+            "ltp",
+            "oi",
+            "volume",
+
+        ]
+
+        if column
+        in option_chain_df.columns
+
+    ]
 
 
-    display_df = option_chain_df[table_columns].copy()
+    display_df = (
 
-    display_df = display_df.sort_values(
-        by=["strike_price", "option_type"]
+        option_chain_df[
+            table_columns
+        ]
+
+        .copy()
+
     )
+
+
+    sort_cols = [
+
+        col
+
+        for col in [
+
+            "strike_price",
+            "option_type",
+
+        ]
+
+        if col
+        in display_df.columns
+
+    ]
+
+
+    if sort_cols:
+
+        display_df = (
+            display_df.sort_values(
+                by=sort_cols
+            )
+        )
+
 
     st.dataframe(
+
         display_df,
+
         use_container_width=True,
-        hide_index=True
+
+        hide_index=True,
+
     )
+
 
 else:
 
@@ -809,71 +2013,195 @@ else:
 
 # ============================================================
 # NIFTY 5-MINUTE CHART
+#
+# Instead of only today's data,
+# fetch previous 7 days.
+#
+# So weekend / holiday also works.
 # ============================================================
 st.markdown("---")
-st.markdown("### 📈 NIFTY Live Structure Chart")
+
+st.markdown(
+    "### 📈 NIFTY Live Structure Chart"
+)
 
 
-today = datetime.date.today().strftime(
+today_date = (
+    datetime.date.today()
+)
+
+
+range_from = (
+
+    today_date
+    - datetime.timedelta(
+        days=7
+    )
+
+).strftime(
     "%Y-%m-%d"
 )
 
 
+range_to = (
+    today_date.strftime(
+        "%Y-%m-%d"
+    )
+)
+
+
 history_data = {
-    "symbol": "NSE:NIFTY50-INDEX",
-    "resolution": "5",
-    "date_format": "1",
-    "range_from": today,
-    "range_to": today,
-    "cont_flag": "1"
+
+    "symbol":
+        "NSE:NIFTY50-INDEX",
+
+    "resolution":
+        "5",
+
+    "date_format":
+        "1",
+
+    "range_from":
+        range_from,
+
+    "range_to":
+        range_to,
+
+    "cont_flag":
+        "1",
+
 }
 
 
-history_df = pd.DataFrame()
+history_df = (
+    pd.DataFrame()
+)
 
 
+# ============================================================
+# FETCH HISTORY
+# ============================================================
 try:
 
-    history_response = fyers.history(
-        data=history_data
+    history_response = (
+        fyers.history(
+            data=history_data
+        )
     )
 
+
     if (
-        isinstance(history_response, dict)
-        and history_response.get("s") == "ok"
+
+        isinstance(
+            history_response,
+            dict,
+        )
+
+        and history_response.get(
+            "s"
+        ) == "ok"
+
     ):
 
-        candles = history_response.get(
-            "candles",
-            []
+        candles = (
+
+            history_response.get(
+                "candles",
+                [],
+            )
+
+            or []
+
         )
+
 
         if candles:
 
-            history_df = pd.DataFrame(
-                candles,
-                columns=[
-                    "Date",
-                    "Open",
-                    "High",
-                    "Low",
-                    "Close",
-                    "Volume"
-                ]
+            history_df = (
+                pd.DataFrame(
+
+                    candles,
+
+                    columns=[
+
+                        "Date",
+                        "Open",
+                        "High",
+                        "Low",
+                        "Close",
+                        "Volume",
+
+                    ],
+
+                )
             )
 
-            history_df["Date"] = (
+
+            # ------------------------------------------------
+            # CONVERT TIME TO INDIA
+            # ------------------------------------------------
+            history_df[
+                "Date"
+            ] = (
+
                 pd.to_datetime(
-                    history_df["Date"],
+
+                    history_df[
+                        "Date"
+                    ],
+
                     unit="s",
-                    utc=True
+
+                    utc=True,
+
                 )
-                .dt.tz_convert("Asia/Kolkata")
+
+                .dt.tz_convert(
+                    "Asia/Kolkata"
+                )
+
             )
+
+
+            # ------------------------------------------------
+            # GET LATEST AVAILABLE TRADING DAY
+            # ------------------------------------------------
+            latest_trade_date = (
+
+                history_df[
+                    "Date"
+                ]
+
+                .dt.date
+
+                .max()
+
+            )
+
+
+            history_df = (
+
+                history_df[
+
+                    history_df[
+                        "Date"
+                    ].dt.date
+
+                    == latest_trade_date
+
+                ]
+
+                .copy()
+
+            )
+
 
 except Exception as e:
 
-    st.error("❌ History API Error")
+    st.error(
+        "❌ History API Error."
+    )
+
     st.exception(e)
 
 
@@ -884,91 +2212,245 @@ if not history_df.empty:
 
     fig = go.Figure()
 
+
+    # ========================================================
+    # CANDLESTICK
+    # ========================================================
     fig.add_trace(
+
         go.Candlestick(
-            x=history_df["Date"],
-            open=history_df["Open"],
-            high=history_df["High"],
-            low=history_df["Low"],
-            close=history_df["Close"],
-            name="NIFTY"
+
+            x=history_df[
+                "Date"
+            ],
+
+            open=history_df[
+                "Open"
+            ],
+
+            high=history_df[
+                "High"
+            ],
+
+            low=history_df[
+                "Low"
+            ],
+
+            close=history_df[
+                "Close"
+            ],
+
+            name="NIFTY",
+
         )
+
     )
 
-    # Resistance
+
+    # ========================================================
+    # RESISTANCE
+    # ========================================================
     if res_strike > 0:
 
         fig.add_hline(
+
             y=res_strike,
+
             line_width=2,
+
             line_dash="dash",
+
             annotation_text=(
-                f"Resistance: {res_strike}"
-            )
+                f"Resistance: "
+                f"{res_strike}"
+            ),
+
         )
 
-    # Support
+
+    # ========================================================
+    # SUPPORT
+    # ========================================================
     if sup_strike > 0:
 
         fig.add_hline(
+
             y=sup_strike,
+
             line_width=2,
+
             line_dash="dash",
+
             annotation_text=(
-                f"Support: {sup_strike}"
-            )
+                f"Support: "
+                f"{sup_strike}"
+            ),
+
         )
 
+
+    # ========================================================
     # ATM
+    # ========================================================
     if atm_strike > 0:
 
         fig.add_hline(
+
             y=atm_strike,
+
             line_width=1,
+
             line_dash="dot",
+
             annotation_text=(
-                f"ATM: {atm_strike}"
-            )
+                f"ATM: "
+                f"{atm_strike}"
+            ),
+
         )
 
+
+    # ========================================================
+    # CHART SETTINGS
+    # ========================================================
     fig.update_layout(
+
         xaxis_rangeslider_visible=False,
+
         height=550,
+
         margin=dict(
+
             l=0,
             r=0,
             t=30,
-            b=0
-        )
+            b=0,
+
+        ),
+
     )
 
+
     st.plotly_chart(
+
         fig,
-        use_container_width=True
+
+        use_container_width=True,
+
     )
+
 
 else:
 
     st.warning(
-        "⚠️ NIFTY chart data is unavailable."
+
+        "⚠️ NIFTY chart data is unavailable "
+        "for the last 7 days."
+
     )
 
 
 # ============================================================
-# DEBUG SECTION
+# DEBUG INFORMATION
 # ============================================================
-with st.expander("🔧 Debug Information"):
+with st.expander(
+    "🔧 Debug Information"
+):
 
-    st.write("FYERS Login: ✅")
-    st.write("Client ID:", CLIENT_ID)
-    st.write("Redirect URI:", REDIRECT_URI)
-    st.write("NIFTY Spot:", spot_price)
-    st.write("ATM Strike:", atm_strike)
-    st.write("Selected Strike:", selected_strike)
+    st.write(
+        "FYERS Login:",
+        "✅",
+    )
 
-    st.write("Option Chain Response:")
+    st.write(
+        "Client ID:",
+        CLIENT_ID,
+    )
+
+    st.write(
+        "Redirect URI:",
+        REDIRECT_URI,
+    )
+
+    st.write(
+        "NIFTY Spot:",
+        spot_price,
+    )
+
+    st.write(
+        "ATM Strike:",
+        atm_strike,
+    )
+
+    st.write(
+        "Strike Type:",
+        strike_type,
+    )
+
+    st.write(
+        "CE Selected Strike:",
+        ce_selected_strike,
+    )
+
+    st.write(
+        "PE Selected Strike:",
+        pe_selected_strike,
+    )
+
+    st.write(
+        "Selected Expiry:",
+        selected_expiry_label,
+    )
+
+    st.write(
+        "Selected Expiry Timestamp:",
+        selected_expiry_timestamp,
+    )
+
+    st.write(
+        "3-Min OI Ready:",
+        oi_3min_ready,
+    )
+
+    st.write(
+        "Option Chain Columns:",
+        list(
+            option_chain_df.columns
+        ),
+    )
+
+
+    st.write(
+        "Option Chain Response:"
+    )
+
 
     if option_chain_response:
-        st.json(option_chain_response)
+
+        st.json(
+            option_chain_response
+        )
+
     else:
-        st.write("No response received.")
+
+        st.write(
+            "No option chain response received."
+        )
+
+
+    st.write(
+        "Quote Response:"
+    )
+
+
+    if quote_response:
+
+        st.json(
+            quote_response
+        )
+
+    else:
+
+        st.write(
+            "No quote response received."
+        )
