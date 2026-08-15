@@ -1,5 +1,5 @@
-streamlit
-plotly
-fyers-apiv3
-pandas
+streamlit==1.61.1
+fyers-apiv3==3.1.16
 streamlit-autorefresh
+pandas
+plotly
