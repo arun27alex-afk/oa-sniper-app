@@ -737,29 +737,302 @@ st.markdown("---")
 
 
 # ============================================================
-# DYNAMIC S/R (ALGORITHM-BASED FROM ENTIRE OPTION CHAIN)
+# NIFTY 5-MINUTE PRICE HISTORY
+#
+# Used BEFORE support/resistance calculation so the S/R engine can
+# adapt itself to the current intraday volatility instead of blindly
+# choosing the highest OI strike anywhere in the option chain.
 # ============================================================
+today_date = datetime.date.today()
+range_from = (today_date - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+range_to = today_date.strftime("%Y-%m-%d")
+
+history_data = {
+    "symbol": "NSE:NIFTY50-INDEX",
+    "resolution": "5",
+    "date_format": "1",
+    "range_from": range_from,
+    "range_to": range_to,
+    "cont_flag": "1",
+}
+
+history_df = pd.DataFrame()
+
+try:
+    history_response = fyers.history(data=history_data)
+
+    if isinstance(history_response, dict) and history_response.get("s") == "ok":
+        candles = history_response.get("candles", []) or []
+
+        if candles:
+            history_df = pd.DataFrame(
+                candles,
+                columns=["Date", "Open", "High", "Low", "Close", "Volume"],
+            )
+
+            history_df["Date"] = (
+                pd.to_datetime(history_df["Date"], unit="s", utc=True)
+                .dt.tz_convert("Asia/Kolkata")
+            )
+
+            latest_trade_date = history_df["Date"].dt.date.max()
+            history_df = history_df[
+                history_df["Date"].dt.date == latest_trade_date
+            ].copy()
+
+            for col in ["Open", "High", "Low", "Close", "Volume"]:
+                history_df[col] = pd.to_numeric(history_df[col], errors="coerce")
+
+            history_df = history_df.dropna(
+                subset=["Open", "High", "Low", "Close"]
+            ).sort_values("Date")
+
+except Exception as e:
+    st.warning("⚠️ 5-minute history unavailable for adaptive S/R. Using fallback range.")
+
+
+# ============================================================
+# ADAPTIVE INTRADAY SUPPORT / RESISTANCE ENGINE
+# ============================================================
+# OLD ISSUE:
+# Highest CE/PE OI across the full option chain can select very distant
+# strikes (example: 24500 resistance when NIFTY is around 24100).
+# That can be useful as a positional OI wall, but is often not useful
+# as an INTRADAY support/resistance level.
+#
+# NEW LOGIC:
+# 1. Calculate current 5-minute ATR / recent one-hour price range.
+# 2. Build an adaptive strike search band around current NIFTY price.
+# 3. Resistance candidates = CE strikes above/near ATM inside the band.
+# 4. Support candidates    = PE strikes below/near ATM inside the band.
+# 5. Rank candidates using:
+#       - Current OI strength
+#       - 3-minute OI build-up / unwinding
+#       - Option volume
+#       - Recent price-action high/low proximity
+#       - Distance from current spot
+# This makes S/R move with the market instead of being anchored to a
+# distant maximum-OI strike.
+# ============================================================
+
+atr_5m = 0.0
+recent_1h_range = 0.0
+recent_high = spot_price
+recent_low = spot_price
+
+if not history_df.empty:
+    recent_candles = history_df.tail(12).copy()  # approx. last 60 minutes
+
+    if not recent_candles.empty:
+        recent_high = safe_float(recent_candles["High"].max())
+        recent_low = safe_float(recent_candles["Low"].min())
+        recent_1h_range = max(0.0, recent_high - recent_low)
+
+        previous_close = recent_candles["Close"].shift(1)
+        true_range = pd.concat(
+            [
+                recent_candles["High"] - recent_candles["Low"],
+                (recent_candles["High"] - previous_close).abs(),
+                (recent_candles["Low"] - previous_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+
+        if not true_range.dropna().empty:
+            atr_5m = safe_float(true_range.dropna().tail(12).mean())
+
+# Adaptive range:
+# - Minimum ±150 points: enough room to identify a genuine nearby wall.
+# - Expands automatically when intraday volatility increases.
+# - Hard cap ±350 points prevents positional/far OI from dominating.
+raw_sr_band = max(
+    150.0,
+    atr_5m * 6.0,
+    recent_1h_range * 0.90,
+)
+
+adaptive_sr_band = int(round(raw_sr_band / 50.0) * 50)
+adaptive_sr_band = max(150, min(350, adaptive_sr_band))
+
+# Candidate boundaries are based on live spot, not a fixed strike count.
+support_floor = spot_price - adaptive_sr_band
+resistance_ceiling = spot_price + adaptive_sr_band
+
 max_ce_oi = 0
 max_pe_oi = 0
 res_strike = 0
 sup_strike = 0
+res_score = 0.0
+sup_score = 0.0
+res_3min_change = 0
+sup_3min_change = 0
 
-if not option_chain_df.empty:
-    required_cols = {"option_type", "oi", "strike_price"}
-    if required_cols.issubset(option_chain_df.columns):
-        
-        ce_df = option_chain_df[option_chain_df["option_type"] == "CE"].dropna(subset=["oi", "strike_price"]).copy()
-        pe_df = option_chain_df[option_chain_df["option_type"] == "PE"].dropna(subset=["oi", "strike_price"]).copy()
 
-        if not ce_df.empty:
-            max_ce_row = ce_df.loc[ce_df["oi"].idxmax()]
-            max_ce_oi = safe_int(max_ce_row["oi"])
-            res_strike = safe_int(max_ce_row["strike_price"])
+def build_sr_candidates(df, option_type):
+    required = {"option_type", "strike_price", "oi"}
+    if df.empty or not required.issubset(df.columns):
+        return pd.DataFrame()
 
-        if not pe_df.empty:
-            max_pe_row = pe_df.loc[pe_df["oi"].idxmax()]
-            max_pe_oi = safe_int(max_pe_row["oi"])
-            sup_strike = safe_int(max_pe_row["strike_price"])
+    side_df = df[df["option_type"] == option_type].copy()
+    side_df = side_df.dropna(subset=["strike_price", "oi"])
+
+    if side_df.empty:
+        return side_df
+
+    if option_type == "CE":
+        # Resistance should be at/above ATM and within adaptive range.
+        side_df = side_df[
+            (side_df["strike_price"] >= atm_strike)
+            & (side_df["strike_price"] <= resistance_ceiling)
+        ].copy()
+    else:
+        # Support should be at/below ATM and within adaptive range.
+        side_df = side_df[
+            (side_df["strike_price"] <= atm_strike)
+            & (side_df["strike_price"] >= support_floor)
+        ].copy()
+
+    return side_df
+
+
+def rank_intraday_sr(candidate_df, option_type):
+    """
+    Returns the strongest nearby intraday OI wall.
+
+    Score components:
+        40% current OI
+        25% 3-minute OI change
+        15% recent price-action proximity
+        10% option volume
+        10% proximity to current spot
+    """
+    if candidate_df.empty:
+        return None
+
+    work = candidate_df.copy()
+
+    # Current 3-minute OI change for every candidate strike.
+    oi_changes = []
+    oi_change_ready = []
+
+    for _, row in work.iterrows():
+        strike = safe_int(row.get("strike_price", 0))
+        current_oi_value = safe_int(row.get("oi", 0))
+        diff, ready, _, _ = get_3min_oi_change(
+            option_type,
+            strike,
+            current_oi_value,
+        )
+        oi_changes.append(diff)
+        oi_change_ready.append(ready)
+
+    work["oi_3m_change"] = oi_changes
+    work["oi_3m_ready"] = oi_change_ready
+
+    # Normalized current OI strength.
+    max_oi = max(safe_float(work["oi"].max()), 1.0)
+    work["oi_strength"] = work["oi"].fillna(0).astype(float) / max_oi
+
+    # Normalized volume strength (if FYERS provides volume).
+    if "volume" in work.columns:
+        max_volume = max(safe_float(work["volume"].fillna(0).max()), 1.0)
+        work["volume_strength"] = (
+            work["volume"].fillna(0).astype(float) / max_volume
+        )
+    else:
+        work["volume_strength"] = 0.0
+
+    # Positive OI addition strengthens a wall; OI unwinding weakens it.
+    ready_changes = work.loc[work["oi_3m_ready"], "oi_3m_change"].abs()
+    max_abs_change = max(safe_float(ready_changes.max()) if not ready_changes.empty else 0.0, 1.0)
+
+    def change_strength(row):
+        if not bool(row["oi_3m_ready"]):
+            return 0.0
+        value = safe_float(row["oi_3m_change"]) / max_abs_change
+        return max(-1.0, min(1.0, value))
+
+    work["change_strength"] = work.apply(change_strength, axis=1)
+
+    # Recent price action confirmation:
+    # CE resistance gets a bonus near the recent swing high.
+    # PE support gets a bonus near the recent swing low.
+    price_reference = recent_high if option_type == "CE" else recent_low
+    price_scale = max(75.0, adaptive_sr_band * 0.60)
+    work["price_action_strength"] = (
+        1.0
+        - ((work["strike_price"].astype(float) - price_reference).abs() / price_scale)
+    ).clip(lower=0.0, upper=1.0)
+
+    # Nearby strikes receive a small preference, but proximity alone
+    # cannot overpower a genuine OI wall.
+    work["spot_proximity"] = (
+        1.0
+        - ((work["strike_price"].astype(float) - spot_price).abs() / max(adaptive_sr_band, 1))
+    ).clip(lower=0.0, upper=1.0)
+
+    work["sr_score"] = (
+        0.40 * work["oi_strength"]
+        + 0.25 * work["change_strength"]
+        + 0.15 * work["price_action_strength"]
+        + 0.10 * work["volume_strength"]
+        + 0.10 * work["spot_proximity"]
+    )
+
+    # If OI history has not completed 3 minutes yet, redistribute the
+    # change weight to current OI so the level still works immediately.
+    if not work["oi_3m_ready"].any():
+        work["sr_score"] = (
+            0.60 * work["oi_strength"]
+            + 0.15 * work["price_action_strength"]
+            + 0.10 * work["volume_strength"]
+            + 0.15 * work["spot_proximity"]
+        )
+
+    return work.loc[work["sr_score"].idxmax()]
+
+
+ce_candidates = build_sr_candidates(option_chain_df, "CE")
+pe_candidates = build_sr_candidates(option_chain_df, "PE")
+
+best_resistance = rank_intraday_sr(ce_candidates, "CE")
+best_support = rank_intraday_sr(pe_candidates, "PE")
+
+if best_resistance is not None:
+    res_strike = safe_int(best_resistance.get("strike_price", 0))
+    max_ce_oi = safe_int(best_resistance.get("oi", 0))
+    res_score = safe_float(best_resistance.get("sr_score", 0))
+    res_3min_change = safe_int(best_resistance.get("oi_3m_change", 0))
+
+if best_support is not None:
+    sup_strike = safe_int(best_support.get("strike_price", 0))
+    max_pe_oi = safe_int(best_support.get("oi", 0))
+    sup_score = safe_float(best_support.get("sr_score", 0))
+    sup_3min_change = safe_int(best_support.get("oi_3m_change", 0))
+
+# Fallback: if one side has no strike inside the adaptive band,
+# use the nearest available strike on the correct side of ATM.
+if res_strike <= 0 and not option_chain_df.empty:
+    fallback_ce = option_chain_df[
+        (option_chain_df["option_type"] == "CE")
+        & (option_chain_df["strike_price"] >= atm_strike)
+    ].copy()
+    if not fallback_ce.empty:
+        nearest_idx = (fallback_ce["strike_price"] - spot_price).abs().idxmin()
+        nearest_row = fallback_ce.loc[nearest_idx]
+        res_strike = safe_int(nearest_row.get("strike_price", 0))
+        max_ce_oi = safe_int(nearest_row.get("oi", 0))
+
+if sup_strike <= 0 and not option_chain_df.empty:
+    fallback_pe = option_chain_df[
+        (option_chain_df["option_type"] == "PE")
+        & (option_chain_df["strike_price"] <= atm_strike)
+    ].copy()
+    if not fallback_pe.empty:
+        nearest_idx = (fallback_pe["strike_price"] - spot_price).abs().idxmin()
+        nearest_row = fallback_pe.loc[nearest_idx]
+        sup_strike = safe_int(nearest_row.get("strike_price", 0))
+        max_pe_oi = safe_int(nearest_row.get("oi", 0))
 
 
 # ============================================================
@@ -770,20 +1043,28 @@ r1, r2 = st.columns(2)
 with r1:
     st.markdown(f"""
         <div style="background:#fee2e2; padding:18px; border-radius:12px; text-align:center; border: 1px solid #fca5a5;">
-            <h4 style="color:#dc2626; margin-bottom:5px;">🔴 Dynamic Resistance</h4>
+            <h4 style="color:#dc2626; margin-bottom:5px;">🔴 Intraday Resistance</h4>
             <h2 style="color:#0f172a; margin:0px;">{res_strike if res_strike else "N/A"}</h2>
-            <p style="color:#334155; margin-top:5px; font-weight:bold;">Highest CE OI: {format_lakhs(max_ce_oi)}</p>
+            <p style="color:#334155; margin-top:5px; margin-bottom:2px; font-weight:bold;">CE OI: {format_lakhs(max_ce_oi)}</p>
+            <p style="color:#64748b; margin:0px; font-size:13px;">3m OI: {oi_change_text(res_3min_change)}</p>
         </div>
     """, unsafe_allow_html=True)
 
 with r2:
     st.markdown(f"""
         <div style="background:#dcfce7; padding:18px; border-radius:12px; text-align:center; border: 1px solid #86efac;">
-            <h4 style="color:#16a34a; margin-bottom:5px;">🟢 Dynamic Support</h4>
+            <h4 style="color:#16a34a; margin-bottom:5px;">🟢 Intraday Support</h4>
             <h2 style="color:#0f172a; margin:0px;">{sup_strike if sup_strike else "N/A"}</h2>
-            <p style="color:#334155; margin-top:5px; font-weight:bold;">Highest PE OI: {format_lakhs(max_pe_oi)}</p>
+            <p style="color:#334155; margin-top:5px; margin-bottom:2px; font-weight:bold;">PE OI: {format_lakhs(max_pe_oi)}</p>
+            <p style="color:#64748b; margin:0px; font-size:13px;">3m OI: {oi_change_text(sup_3min_change)}</p>
         </div>
     """, unsafe_allow_html=True)
+
+st.caption(
+    f"Adaptive intraday S/R range: ±{adaptive_sr_band} pts"
+    f" | 5m ATR: {atr_5m:.1f}"
+    f" | Recent 1h range: {recent_1h_range:.1f}"
+)
 
 
 # ============================================================
@@ -806,65 +1087,77 @@ else:
 
 
 # ============================================================
-# NIFTY 5-MINUTE CHART (WITH DYNAMIC S/R LINES & MOBILE ZOOM)
+# NIFTY 5-MINUTE CHART (WITH ADAPTIVE S/R LINES & MOBILE ZOOM)
 # ============================================================
 st.markdown("---")
 st.markdown("### 📈 NIFTY Live Structure Chart")
-
-today_date = datetime.date.today()
-range_from = (today_date - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-range_to = today_date.strftime("%Y-%m-%d")
-
-history_data = {"symbol": "NSE:NIFTY50-INDEX", "resolution": "5", "date_format": "1", "range_from": range_from, "range_to": range_to, "cont_flag": "1"}
-history_df = pd.DataFrame()
-
-try:
-    history_response = fyers.history(data=history_data)
-    if isinstance(history_response, dict) and history_response.get("s") == "ok":
-        candles = history_response.get("candles", []) or []
-        if candles:
-            history_df = pd.DataFrame(candles, columns=["Date", "Open", "High", "Low", "Close", "Volume"])
-            history_df["Date"] = pd.to_datetime(history_df["Date"], unit="s", utc=True).dt.tz_convert("Asia/Kolkata")
-            latest_trade_date = history_df["Date"].dt.date.max()
-            history_df = history_df[history_df["Date"].dt.date == latest_trade_date].copy()
-except Exception as e:
-    st.error("❌ History API Error.")
-    st.exception(e)
 
 if not history_df.empty:
     fig = go.Figure()
 
     # Candlestick
-    fig.add_trace(go.Candlestick(x=history_df["Date"], open=history_df["Open"], high=history_df["High"], low=history_df["Low"], close=history_df["Close"], name="NIFTY"))
+    fig.add_trace(
+        go.Candlestick(
+            x=history_df["Date"],
+            open=history_df["Open"],
+            high=history_df["High"],
+            low=history_df["Low"],
+            close=history_df["Close"],
+            name="NIFTY",
+        )
+    )
 
-    # Dynamic Resistance Line (Red)
+    # Adaptive Resistance Line (Red)
     if res_strike > 0:
-        fig.add_hline(y=res_strike, line_width=2, line_dash="dash", line_color="red", annotation_text=f"Resistance: {res_strike}", annotation_position="top left", annotation_font_color="red")
+        fig.add_hline(
+            y=res_strike,
+            line_width=2,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Resistance: {res_strike}",
+            annotation_position="top left",
+            annotation_font_color="red",
+        )
 
-    # Dynamic Support Line (Green)
+    # Adaptive Support Line (Green)
     if sup_strike > 0:
-        fig.add_hline(y=sup_strike, line_width=2, line_dash="dash", line_color="green", annotation_text=f"Support: {sup_strike}", annotation_position="bottom left", annotation_font_color="green")
+        fig.add_hline(
+            y=sup_strike,
+            line_width=2,
+            line_dash="dash",
+            line_color="green",
+            annotation_text=f"Support: {sup_strike}",
+            annotation_position="bottom left",
+            annotation_font_color="green",
+        )
 
     # ATM Line
     if atm_strike > 0:
-        fig.add_hline(y=atm_strike, line_width=1, line_dash="dot", line_color="gray", annotation_text=f"ATM: {atm_strike}", annotation_position="top right")
+        fig.add_hline(
+            y=atm_strike,
+            line_width=1,
+            line_dash="dot",
+            line_color="gray",
+            annotation_text=f"ATM: {atm_strike}",
+            annotation_position="top right",
+        )
 
     # Chart Mobile & Touch Settings
     fig.update_layout(
         xaxis_rangeslider_visible=False,
-        dragmode='pan', # Enables 1-finger pan on mobile
+        dragmode="pan",
         height=550,
         margin=dict(l=0, r=0, t=30, b=0),
     )
 
     # Plotly Chart with Mobile Scroll/Pinch Zoom enabled
     st.plotly_chart(
-        fig, 
-        use_container_width=True, 
+        fig,
+        use_container_width=True,
         config={
-            'scrollZoom': True,       # Enables 2-finger pinch-to-zoom
-            'displayModeBar': False   # Hides the distracting modebar on mobile
-        }
+            "scrollZoom": True,
+            "displayModeBar": False,
+        },
     )
 else:
     st.warning("⚠️ NIFTY chart data is unavailable for the last 7 days.")
@@ -891,6 +1184,15 @@ with st.expander("🔧 Debug Information"):
     st.write("CE History Samples:", ce_history_samples)
     st.write("PE History Samples:", pe_history_samples)
     st.write("Tracked OI Contracts:", len(st.session_state.get("oi_history_by_contract", {})))
+    st.write("Adaptive S/R Band:", adaptive_sr_band)
+    st.write("5m ATR:", round(atr_5m, 2))
+    st.write("Recent 1h Range:", round(recent_1h_range, 2))
+    st.write("Recent High:", round(recent_high, 2))
+    st.write("Recent Low:", round(recent_low, 2))
+    st.write("Resistance Score:", round(res_score, 4))
+    st.write("Support Score:", round(sup_score, 4))
+    st.write("Resistance 3m OI Change:", res_3min_change)
+    st.write("Support 3m OI Change:", sup_3min_change)
     st.write("Option Chain Columns:", list(option_chain_df.columns) if not option_chain_df.empty else [])
     
     st.write("Option Chain Response:")
