@@ -226,6 +226,7 @@ with top_right:
         st.session_state.pop("access_token", None)
         st.session_state.pop("fyers_profile_verified", None)
         st.session_state.pop("oi_history", None)
+        st.session_state.pop("oi_history_by_contract", None)
         st.query_params.clear()
         st.rerun()
 
@@ -499,32 +500,149 @@ if pe_row is not None:
 
 # ============================================================
 # TRUE ROLLING 3-MINUTE OI TRACKER
+#
+# IMPORTANT FIX:
+# Do NOT reset history when ATM / ITM / OTM strike changes.
+# NIFTY can move across a 50-point ATM boundary and the old logic
+# kept clearing the 3-minute history, so it could stay on
+# "Building 3m..." continuously.
+#
+# Instead, store OI history separately for EVERY option contract
+# returned by the option chain: Expiry + CE/PE + Strike.
 # ============================================================
 current_time = time.time()
-oi_context_key = f"{selected_expiry_timestamp}|{strike_type}|CE:{ce_selected_strike}|PE:{pe_selected_strike}"
+OI_LOOKBACK_SECONDS = 180   # exactly 3 minutes
+OI_KEEP_SECONDS = 900       # keep 15 minutes of samples
 
-if st.session_state.get("oi_context_key") != oi_context_key:
-    st.session_state["oi_context_key"] = oi_context_key
-    st.session_state["oi_history"] = []
-
-oi_history = st.session_state.get("oi_history", [])
-oi_history.append({"timestamp": current_time, "ce_oi": ce_oi, "pe_oi": pe_oi})
-
-oi_history = [sample for sample in oi_history if (current_time - sample["timestamp"] <= 600)]
-st.session_state["oi_history"] = oi_history
-
-target_time = current_time - 180
-eligible_samples = [sample for sample in oi_history if (sample["timestamp"] <= target_time)]
-
-if eligible_samples:
-    baseline = max(eligible_samples, key=lambda sample: sample["timestamp"])
-    ce_3min_diff = ce_oi - baseline["ce_oi"]
-    pe_3min_diff = pe_oi - baseline["pe_oi"]
-    oi_3min_ready = True
+# Stable expiry identifier for history storage.
+# Normalize numeric timestamps so 178... and "178..." become the same key.
+if selected_expiry_timestamp not in (None, ""):
+    try:
+        expiry_history_key = str(int(float(selected_expiry_timestamp)))
+    except Exception:
+        expiry_history_key = str(selected_expiry_timestamp)
 else:
-    ce_3min_diff = 0
-    pe_3min_diff = 0
-    oi_3min_ready = False
+    expiry_history_key = str(selected_expiry_label)
+
+# Dictionary structure:
+# {
+#   "expiry|CE|24100": [{"timestamp": ..., "oi": ...}, ...],
+#   "expiry|PE|24100": [{"timestamp": ..., "oi": ...}, ...]
+# }
+if "oi_history_by_contract" not in st.session_state:
+    st.session_state["oi_history_by_contract"] = {}
+
+oi_store = st.session_state["oi_history_by_contract"]
+
+# Save the current OI of ALL CE/PE strikes on every 10-second refresh.
+# This means even if ATM changes from 24100 -> 24150 -> 24100,
+# each strike keeps its own history and the 3-minute comparison survives.
+required_history_cols = {"option_type", "strike_price", "oi"}
+
+if not option_chain_df.empty and required_history_cols.issubset(option_chain_df.columns):
+    history_rows = option_chain_df.dropna(subset=["option_type", "strike_price", "oi"])
+
+    for _, row in history_rows.iterrows():
+        option_type_value = str(row.get("option_type", "")).upper().strip()
+        strike_value = safe_int(row.get("strike_price", 0))
+        oi_value = safe_int(row.get("oi", 0))
+
+        if option_type_value not in ("CE", "PE") or strike_value <= 0:
+            continue
+
+        contract_key = f"{expiry_history_key}|{option_type_value}|{strike_value}"
+        samples = oi_store.get(contract_key, [])
+
+        samples.append({
+            "timestamp": current_time,
+            "oi": oi_value,
+        })
+
+        # Keep only recent history so session memory does not keep growing
+        samples = [
+            sample
+            for sample in samples
+            if current_time - sample["timestamp"] <= OI_KEEP_SECONDS
+        ]
+
+        oi_store[contract_key] = samples
+
+# Remove expired/empty contract histories
+for contract_key in list(oi_store.keys()):
+    samples = [
+        sample
+        for sample in oi_store.get(contract_key, [])
+        if current_time - sample["timestamp"] <= OI_KEEP_SECONDS
+    ]
+
+    if samples:
+        oi_store[contract_key] = samples
+    else:
+        oi_store.pop(contract_key, None)
+
+st.session_state["oi_history_by_contract"] = oi_store
+
+
+def get_3min_oi_change(option_type, strike, current_oi):
+    """
+    Return:
+        diff          -> current OI minus OI approximately 3 minutes ago
+        ready         -> True only after a >=180-second baseline exists
+        history_age   -> seconds since the oldest available sample
+        sample_count  -> number of stored samples for this contract
+    """
+    contract_key = f"{expiry_history_key}|{option_type}|{int(strike)}"
+    samples = oi_store.get(contract_key, [])
+
+    if not samples:
+        return 0, False, 0, 0
+
+    oldest_timestamp = min(sample["timestamp"] for sample in samples)
+    history_age = max(0, current_time - oldest_timestamp)
+
+    target_time = current_time - OI_LOOKBACK_SECONDS
+    eligible_samples = [
+        sample for sample in samples
+        if sample["timestamp"] <= target_time
+    ]
+
+    if not eligible_samples:
+        return 0, False, history_age, len(samples)
+
+    # Pick the closest sample at or before exactly 3 minutes ago
+    baseline = max(eligible_samples, key=lambda sample: sample["timestamp"])
+    diff = safe_int(current_oi) - safe_int(baseline.get("oi", 0))
+
+    return diff, True, history_age, len(samples)
+
+
+def building_text(history_age):
+    remaining = max(0, OI_LOOKBACK_SECONDS - int(history_age))
+    minutes, seconds = divmod(remaining, 60)
+    return f"(Building {minutes}m {seconds:02d}s...)"
+
+
+def oi_change_text(diff):
+    if diff > 0:
+        sign = "+"
+    elif diff < 0:
+        sign = "-"
+    else:
+        sign = ""
+
+    return f"({sign}{format_lakhs(abs(diff))})"
+
+
+ce_3min_diff, ce_3min_ready, ce_history_age, ce_history_samples = get_3min_oi_change(
+    "CE", ce_selected_strike, ce_oi
+)
+
+pe_3min_diff, pe_3min_ready, pe_history_age, pe_history_samples = get_3min_oi_change(
+    "PE", pe_selected_strike, pe_oi
+)
+
+# Kept for debug/backward compatibility
+oi_3min_ready = ce_3min_ready and pe_3min_ready
 
 
 # ============================================================
@@ -541,14 +659,17 @@ with c1:
     st.markdown("""<h4 style="text-align:center; color:#dc2626; margin-bottom:5px;">CE OI</h4>""", unsafe_allow_html=True)
     st.markdown(f"""<h3 style="text-align:center; margin-top:0px;">{format_lakhs(ce_oi)}</h3>""", unsafe_allow_html=True)
 
-    if oi_3min_ready:
-        diff_color = "#16a34a" if ce_3min_diff < 0 else "#dc2626"  # Call writers exiting is bullish (Green), adding is bearish (Red)
-        diff_sign = "+" if ce_3min_diff > 0 else "-"
-        diff_val = format_lakhs(abs(ce_3min_diff))
-        diff_text = f"({diff_sign}{diff_val})"
+    if ce_3min_ready:
+        if ce_3min_diff < 0:
+            diff_color = "#16a34a"  # Call writers exiting = bullish
+        elif ce_3min_diff > 0:
+            diff_color = "#dc2626"  # Call writers adding = bearish
+        else:
+            diff_color = "#64748b"
+        diff_text = oi_change_text(ce_3min_diff)
     else:
         diff_color = "#64748b"
-        diff_text = "(Building 3m...)"
+        diff_text = building_text(ce_history_age)
 
     st.markdown(f"""<p style="text-align:center; font-weight:bold; color:{diff_color};">{diff_text}</p>""", unsafe_allow_html=True)
 
@@ -598,14 +719,17 @@ with c5:
     st.markdown("""<h4 style="text-align:center; color:#16a34a; margin-bottom:5px;">PE OI</h4>""", unsafe_allow_html=True)
     st.markdown(f"""<h3 style="text-align:center; margin-top:0px;">{format_lakhs(pe_oi)}</h3>""", unsafe_allow_html=True)
 
-    if oi_3min_ready:
-        diff_color = "#16a34a" if pe_3min_diff > 0 else "#dc2626"  # Put writers adding is bullish (Green), exiting is bearish (Red)
-        diff_sign = "+" if pe_3min_diff > 0 else "-"
-        diff_val = format_lakhs(abs(pe_3min_diff))
-        diff_text = f"({diff_sign}{diff_val})"
+    if pe_3min_ready:
+        if pe_3min_diff > 0:
+            diff_color = "#16a34a"  # Put writers adding = bullish
+        elif pe_3min_diff < 0:
+            diff_color = "#dc2626"  # Put writers exiting = bearish
+        else:
+            diff_color = "#64748b"
+        diff_text = oi_change_text(pe_3min_diff)
     else:
         diff_color = "#64748b"
-        diff_text = "(Building 3m...)"
+        diff_text = building_text(pe_history_age)
 
     st.markdown(f"""<p style="text-align:center; font-weight:bold; color:{diff_color};">{diff_text}</p>""", unsafe_allow_html=True)
 
@@ -760,6 +884,13 @@ with st.expander("🔧 Debug Information"):
     st.write("Selected Expiry:", selected_expiry_label)
     st.write("Selected Expiry Timestamp:", selected_expiry_timestamp)
     st.write("3-Min OI Ready:", oi_3min_ready)
+    st.write("CE 3-Min Ready:", ce_3min_ready)
+    st.write("PE 3-Min Ready:", pe_3min_ready)
+    st.write("CE History Age (sec):", round(ce_history_age, 1))
+    st.write("PE History Age (sec):", round(pe_history_age, 1))
+    st.write("CE History Samples:", ce_history_samples)
+    st.write("PE History Samples:", pe_history_samples)
+    st.write("Tracked OI Contracts:", len(st.session_state.get("oi_history_by_contract", {})))
     st.write("Option Chain Columns:", list(option_chain_df.columns) if not option_chain_df.empty else [])
     
     st.write("Option Chain Response:")
