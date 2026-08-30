@@ -232,10 +232,10 @@ with top_right:
 
 
 # ============================================================
-# AUTO REFRESH (10 seconds)
+# AUTO REFRESH (15 seconds)
 # ============================================================
 st_autorefresh(
-    interval=10000,
+    interval=15000,
     limit=2000,
     key="sniper_refresh",
 )
